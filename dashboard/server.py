@@ -2249,7 +2249,11 @@ def server(input: Inputs, output: Outputs, session: Session):
 
     def _dcp_base_rows(include_state=True):
         selected_uf = dc_panel_state.get() if include_state else ""
-        rows = [r for r in DATACENTER_ROWS if r.get("rede") == "RB"]
+        rows = [
+            r for r in DATACENTER_ROWS
+            if r.get("rede") == "RB"
+            and _classify_status_card(r.get("status")) not in ("cancelado", "anulado", "interrompido")
+        ]
         if selected_uf:
             rows = [r for r in rows if str(r.get("uf") or "").upper() == selected_uf]
         return rows

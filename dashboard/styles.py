@@ -695,18 +695,16 @@ html, body {
   margin-top: 2px;
 }
 .dcp-card-sub { font-size: 11px; color: var(--text-muted); margin-top: 3px; }
-.dcp-top-grid {
+.dcp-main-grid {
   display: grid;
-  grid-template-columns: 320px minmax(0, 1fr);
+  grid-template-columns: 320px minmax(0, 1fr) 360px;
   gap: 16px;
   align-items: stretch;
-  margin-bottom: 16px;
 }
-.dcp-bottom-grid {
+.dcp-chart-stack {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 360px;
+  grid-template-rows: repeat(2, minmax(0, 1fr));
   gap: 16px;
-  align-items: stretch;
 }
 .dcp-panel {
   background: var(--white);
@@ -716,6 +714,7 @@ html, body {
   padding: 16px 18px;
   overflow: hidden;
 }
+.dcp-chart-panel { display: flex; flex-direction: column; min-height: 0; }
 .dcp-panel-head {
   display: flex;
   align-items: center;
@@ -741,7 +740,7 @@ html, body {
 }
 .dcp-toggle { padding: 4px 10px; border-radius: 5px; }
 .dcp-toggle.active { background: var(--white); color: var(--text); box-shadow: var(--shadow); }
-.dcp-chart-svg { width: 100%; height: 260px; display: block; }
+.dcp-chart-svg { width: 100%; height: 210px; display: block; flex: 1; min-height: 180px; }
 .dcp-chart-grid { stroke: #E5E7EB; stroke-dasharray: 3 4; }
 .dcp-chart-axis-line { stroke: #D1D5DB; }
 .dcp-chart-axis {
@@ -844,6 +843,7 @@ html, body {
 }
 .dcp-map-clear:hover { border-color: var(--green-accent); color: var(--green-dark); }
 .dcp-ranking-table { width: 100%; border-collapse: collapse; margin-top: 14px; font-size: 12px; }
+.dcp-ranking-panel { display: flex; flex-direction: column; }
 .dcp-ranking-table th {
   text-align: right;
   padding: 8px 6px;

@@ -753,9 +753,8 @@ def _write_bd_entrada_excel(path, rows_data, viabilidades_existentes):
 
 
 def server(input: Inputs, output: Outputs, session: Session):
-    # Página inicial: se sidebar oculta (modo apresentação), começa direto em DataCenters
-    _show_sidebar = os.environ.get("DASHBOARD_SHOW_SIDEBAR", "1") == "1"
-    _initial_page = "overview" if _show_sidebar else "datacenters"
+    # Página inicial: painel executivo de DataCenters.
+    _initial_page = "datacenters_panel"
     # State
     current_page = reactive.value(_initial_page)
     selected_proto = reactive.value(None)
@@ -2207,11 +2206,18 @@ def server(input: Inputs, output: Outputs, session: Session):
         fora = _dcp_num(vals.get("fora"))
         return max(ponta, fora)
 
+    def _dcp_is_panel_row(r):
+        return (
+            r.get("rede") == "RB"
+            and _protocol_type(r.get("main_protocol")) == "SPA"
+            and _classify_status_card(r.get("status")) != "cancelado"
+        )
+
     def _dcp_horizon_years():
         years = sorted({
             int(y)
             for r in DATACENTER_ROWS
-            if r.get("rede") == "RB"
+            if _dcp_is_panel_row(r)
             for y, st in (r.get("year_status") or {}).items()
             if st in ("current", "contractable")
         })
@@ -2220,7 +2226,7 @@ def server(input: Inputs, output: Outputs, session: Session):
         return sorted({
             int(y)
             for r in DATACENTER_ROWS
-            if r.get("rede") == "RB"
+            if _dcp_is_panel_row(r)
             for y, vals in (r.get("year_values") or {}).items()
             if _dcp_num(vals.get("ponta")) or _dcp_num(vals.get("fora"))
         })
@@ -2249,11 +2255,7 @@ def server(input: Inputs, output: Outputs, session: Session):
 
     def _dcp_base_rows(include_state=True):
         selected_uf = dc_panel_state.get() if include_state else ""
-        rows = [
-            r for r in DATACENTER_ROWS
-            if r.get("rede") == "RB"
-            and _classify_status_card(r.get("status")) not in ("cancelado", "anulado", "interrompido")
-        ]
+        rows = [r for r in DATACENTER_ROWS if _dcp_is_panel_row(r)]
         if selected_uf:
             rows = [r for r in rows if str(r.get("uf") or "").upper() == selected_uf]
         return rows
@@ -2494,7 +2496,7 @@ def server(input: Inputs, output: Outputs, session: Session):
             tags.div(
                 tags.div("Painel DataCenters", class_="page-title"),
                 tags.div(
-                    f"Rede RB | Ano de referência: {ref_year or '—'} | Período: {period_years[0] if period_years else '—'}–{period_years[-1] if period_years else '—'}",
+                    f"Rede RB | SPA | Ano de referência: {ref_year or '—'} | Período: {period_years[0] if period_years else '—'}–{period_years[-1] if period_years else '—'}",
                     class_="page-subtitle",
                 ),
                 class_="dcp-title-row",
@@ -2527,13 +2529,13 @@ def server(input: Inputs, output: Outputs, session: Session):
                     ),
                     class_="dcp-panel dcp-map-panel",
                 ),
-                _dcp_chart(series, f"Montante Total de DCs que chegou no ONS — {selected_uf or 'RB'}", include_inviavel=True, include_line=False),
-                class_="dcp-top-grid",
-            ),
-            tags.div(
-                _dcp_chart(possible_series, f"Evolução do montante total de possíveis DCs em {selected_uf or 'RB'}", include_inviavel=False, include_line=True),
+                tags.div(
+                    _dcp_chart(series, f"Montante Total de DCs que chegou no ONS — {selected_uf or 'RB'}", include_inviavel=True, include_line=False),
+                    _dcp_chart(possible_series, f"Evolução do montante total de possíveis DCs em {selected_uf or 'RB'}", include_inviavel=False, include_line=True),
+                    class_="dcp-chart-stack",
+                ),
                 _dcp_ranking(state_totals, ref_year),
-                class_="dcp-bottom-grid",
+                class_="dcp-main-grid",
             ),
         )
 

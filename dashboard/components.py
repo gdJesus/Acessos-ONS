@@ -139,6 +139,7 @@ def _overview_filters_section():
         ui.input_action_button("btn_reset", "↺ Limpar filtros", class_="filter-reset"),
         id="filters-overview",
         class_="sidebar-section sidebar-filters-section",
+        style="display:none;",
     )
 
 
@@ -215,10 +216,14 @@ def _datacenters_panel_filters_section():
             tags.div("RB", class_="filter-static-value"),
             class_="filter-group",
         ),
+        tags.div(
+            tags.div("Tipo:", class_="filter-label"),
+            tags.div("SPA", class_="filter-static-value"),
+            class_="filter-group",
+        ),
         ui.input_action_button("dcp_reset", "↺ Limpar filtros", class_="filter-reset"),
         id="filters-dcp",
         class_="sidebar-section sidebar-filters-section",
-        style="display:none;",
     )
 
 
@@ -227,9 +232,9 @@ def make_sidebar():
         # Navegação
         tags.div(
             tags.div("Navegação", class_="sidebar-section-title"),
-            ui.input_action_button("nav_overview", "", class_="nav-btn active"),
+            ui.input_action_button("nav_overview", "", class_="nav-btn"),
             ui.input_action_button("nav_datacenters", "", class_="nav-btn"),
-            ui.input_action_button("nav_datacenters_panel", "", class_="nav-btn"),
+            ui.input_action_button("nav_datacenters_panel", "", class_="nav-btn active"),
             class_="sidebar-section",
         ),
         tags.div(class_="sidebar-divider"),

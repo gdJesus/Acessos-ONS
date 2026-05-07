@@ -2200,11 +2200,34 @@ def server(input: Inputs, output: Outputs, session: Session):
             return f"{int(round(value)):,.0f}".replace(",", ".")
         return f"{value:,.1f}".replace(",", "_").replace(".", ",").replace("_", ".")
 
-    def _dcp_year_mw(r, year):
-        vals = _year_dict_get(r.get("year_values") or {}, year)
+    def _dcp_values_mw(vals):
         ponta = _dcp_num(vals.get("ponta"))
         fora = _dcp_num(vals.get("fora"))
         return max(ponta, fora)
+
+    def _dcp_effective_value_year(r, year):
+        if year is None:
+            return None
+        try:
+            year_int = int(year)
+        except Exception:
+            return None
+        candidates = []
+        for raw_year, vals in (r.get("year_values") or {}).items():
+            try:
+                y = int(raw_year)
+            except Exception:
+                continue
+            if y <= year_int and _dcp_values_mw(vals or {}):
+                candidates.append(y)
+        return max(candidates) if candidates else None
+
+    def _dcp_year_mw(r, year):
+        effective_year = _dcp_effective_value_year(r, year)
+        if effective_year is None:
+            return 0.0
+        vals = _year_dict_get(r.get("year_values") or {}, effective_year)
+        return _dcp_values_mw(vals)
 
     def _dcp_is_panel_row(r):
         return (
@@ -2261,6 +2284,9 @@ def server(input: Inputs, output: Outputs, session: Session):
         return rows
 
     def _dcp_year_viab(r, year):
+        effective_year = _dcp_effective_value_year(r, year)
+        if effective_year is not None:
+            year = effective_year
         viab_data = r.get("viabilidade_anos") or {}
         anos = viab_data.get("anos") or {}
         vals = _year_dict_get(anos, year)

@@ -2176,19 +2176,30 @@ def server(input: Inputs, output: Outputs, session: Session):
     def _dcp_num(value):
         if value is None:
             return 0.0
+        if isinstance(value, (int, float)):
+            return float(value)
         try:
             if pd.isna(value):
                 return 0.0
         except Exception:
             pass
         try:
-            return float(str(value).replace(".", "").replace(",", "."))
+            text = str(value).strip()
+            if "," in text:
+                text = text.replace(".", "").replace(",", ".")
+            return float(text)
         except Exception:
             return 0.0
 
     def _dcp_fmt(value):
         value = _dcp_num(value)
         return f"{int(round(value)):,.0f}".replace(",", ".")
+
+    def _dcp_fmt_mw(value):
+        value = _dcp_num(value)
+        if abs(value - round(value)) < 1e-9:
+            return f"{int(round(value)):,.0f}".replace(",", ".")
+        return f"{value:,.1f}".replace(",", "_").replace(".", ",").replace("_", ".")
 
     def _dcp_year_mw(r, year):
         vals = _year_dict_get(r.get("year_values") or {}, year)
@@ -2348,7 +2359,7 @@ def server(input: Inputs, output: Outputs, session: Session):
             y = top + plot_h - (plot_h * i / 4)
             val = max_total * i / 4
             elems.append(_svg_tag("line", x1=left, y1=y, x2=width - right, y2=y, class_="dcp-chart-grid"))
-            elems.append(_svg_tag("text", _dcp_fmt(val), x=left - 10, y=y + 4, class_="dcp-chart-axis", **{"text-anchor": "end"}))
+            elems.append(_svg_tag("text", _dcp_fmt_mw(val), x=left - 10, y=y + 4, class_="dcp-chart-axis", **{"text-anchor": "end"}))
         elems.append(_svg_tag("line", x1=left, y1=top + plot_h, x2=width - right, y2=top + plot_h, class_="dcp-chart-axis-line"))
 
         line_points = []
@@ -2367,10 +2378,10 @@ def server(input: Inputs, output: Outputs, session: Session):
                 y_base -= h
                 elems.append(_svg_tag("rect", x=x - bar_w / 2, y=y_base, width=bar_w, height=max(h, 1), fill=colors[key], rx=2))
                 if h > 18:
-                    elems.append(_svg_tag("text", _dcp_fmt(val), x=x, y=y_base + h / 2 + 4, class_="dcp-chart-bar-label", **{"text-anchor": "middle"}))
+                    elems.append(_svg_tag("text", _dcp_fmt_mw(val), x=x, y=y_base + h / 2 + 4, class_="dcp-chart-bar-label", **{"text-anchor": "middle"}))
             elems.append(_svg_tag("text", str(item["year"]), x=x, y=top + plot_h + 24, class_="dcp-chart-axis", **{"text-anchor": "middle"}))
             if total:
-                elems.append(_svg_tag("text", _dcp_fmt(total), x=x, y=max(12, line_y - 8), class_="dcp-chart-total", **{"text-anchor": "middle"}))
+                elems.append(_svg_tag("text", _dcp_fmt_mw(total), x=x, y=max(12, line_y - 8), class_="dcp-chart-total", **{"text-anchor": "middle"}))
 
         if include_line and line_points:
             elems.append(_svg_tag("polyline", points=" ".join(line_points), fill="none", stroke="#111827", **{"stroke-width": "2.5"}))
@@ -2431,8 +2442,8 @@ def server(input: Inputs, output: Outputs, session: Session):
             trs.append(tags.tr(
                 tags.td(str(idx), class_="dcp-rank-num"),
                 tags.td(f"{UF_MAP.get(uf, uf)}", class_="dcp-rank-state"),
-                tags.td(_dcp_fmt(total), class_="dcp-rank-mw"),
-                tags.td(_dcp_fmt(acc["aprovado"]), class_="dcp-rank-mw"),
+                tags.td(_dcp_fmt_mw(total), class_="dcp-rank-mw"),
+                tags.td(_dcp_fmt_mw(acc["aprovado"]), class_="dcp-rank-mw"),
                 tags.td(_dcp_pct(acc["aprovado"], total), class_="dcp-rank-pct"),
                 class_=cls,
             ))
@@ -2486,11 +2497,11 @@ def server(input: Inputs, output: Outputs, session: Session):
             ),
             tags.div(
                 _dcp_card("Projetos", _dcp_fmt(summary["projetos"]), "Total no ano de referência", "neutral", "▦"),
-                _dcp_card("MW solicitados", _dcp_fmt(total), "Total no ano de referência", "cyan", "⚡"),
-                _dcp_card("Aprovados", _dcp_fmt(summary["aprovado"]), f"{_dcp_pct(summary['aprovado'], total)} do total", "green", "✓"),
-                _dcp_card("Em análise", _dcp_fmt(summary["analise"]), f"{_dcp_pct(summary['analise'], total)} do total", "blue", "◷"),
-                _dcp_card("Inviáveis", _dcp_fmt(summary["inviavel"]), f"{_dcp_pct(summary['inviavel'], total)} do total", "red", "×"),
-                _dcp_card("CUST assinados", _dcp_fmt(summary["cust"]), f"{_dcp_pct(summary['cust'], total)} do total", "purple", "◇"),
+                _dcp_card("MW solicitados", _dcp_fmt_mw(total), "Total no ano de referência", "cyan", "⚡"),
+                _dcp_card("Aprovados", _dcp_fmt_mw(summary["aprovado"]), f"{_dcp_pct(summary['aprovado'], total)} do total", "green", "✓"),
+                _dcp_card("Em análise", _dcp_fmt_mw(summary["analise"]), f"{_dcp_pct(summary['analise'], total)} do total", "blue", "◷"),
+                _dcp_card("Inviáveis", _dcp_fmt_mw(summary["inviavel"]), f"{_dcp_pct(summary['inviavel'], total)} do total", "red", "×"),
+                _dcp_card("CUST assinados", _dcp_fmt_mw(summary["cust"]), f"{_dcp_pct(summary['cust'], total)} do total", "purple", "◇"),
                 class_="dcp-kpi-row",
             ),
             tags.div(
@@ -2503,8 +2514,8 @@ def server(input: Inputs, output: Outputs, session: Session):
                         tags.div(map_title, class_="dcp-selected-title"),
                         tags.div(
                             tags.div(tags.span("Projetos"), tags.strong(_dcp_fmt(map_summary["projetos"]))),
-                            tags.div(tags.span("MW solic."), tags.strong(_dcp_fmt(map_summary["total"]))),
-                            tags.div(tags.span("Aprovados"), tags.strong(_dcp_fmt(map_summary["aprovado"]))),
+                            tags.div(tags.span("MW solic."), tags.strong(_dcp_fmt_mw(map_summary["total"]))),
+                            tags.div(tags.span("Aprovados"), tags.strong(_dcp_fmt_mw(map_summary["aprovado"]))),
                             class_="dcp-selected-stats",
                         ),
                         tags.button("Limpar seleção", class_="dcp-map-clear") if selected_uf else None,

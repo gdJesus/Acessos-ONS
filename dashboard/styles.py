@@ -701,6 +701,9 @@ html, body {
     transform: translateX(calc(-100% + 38px));
     transition: transform 0.22s ease, box-shadow 0.22s ease;
     box-shadow: 2px 0 10px rgba(0,0,0,0.04);
+    background:
+      linear-gradient(180deg, var(--green-dark) 0%, var(--green-mid) 45%, var(--green-accent) 100%) right / 38px 100% no-repeat,
+      var(--white);
     overflow-x: hidden;
   }
 
@@ -708,6 +711,7 @@ html, body {
   body:not(.no-sidebar) .app-sidebar:focus-within {
     transform: translateX(0);
     box-shadow: 4px 0 18px rgba(0,0,0,0.14);
+    background: var(--white);
   }
 
   body:not(.no-sidebar) .app-sidebar::after {
@@ -729,7 +733,7 @@ html, body {
     letter-spacing: 0.12em;
     line-height: 1.5;
     color: #FFFFFF;
-    background: linear-gradient(180deg, var(--green-dark) 0%, var(--green-mid) 45%, var(--green-accent) 100%);
+    background: transparent;
     border-right: 1px solid rgba(255,255,255,0.24);
     box-shadow: 3px 0 12px rgba(0,0,0,0.18);
     pointer-events: none;

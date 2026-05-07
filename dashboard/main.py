@@ -136,6 +136,7 @@ app_ui = ui.page_fluid(
         {"$('body').addClass('no-sidebar');" if not SHOW_SIDEBAR else ""}
         $('#nav_overview').html('<span class="dot"></span> Visão Geral');
         $('#nav_datacenters').html('<span class="dot"></span> DataCenters');
+        $('#nav_datacenters_panel').html('<span class="dot"></span> Painel DataCenters');
 
         // Row click — Visão Geral MUST
         $(document).on('click', '.proto-table tbody tr[data-proto], .overview-list-table tbody tr[data-proto]', function() {{
@@ -167,6 +168,14 @@ app_ui = ui.page_fluid(
         $(document).on('click', '.conn-tab', function() {{
             Shiny.setInputValue('selected_point_idx', parseInt($(this).data('idx')), {{priority:'event'}});
         }});
+        // Painel DataCenters — filtro por UF no mapa
+        $(document).on('click', '.dcp-brazil-map .state[id]', function(e) {{
+            Shiny.setInputValue('dcp_state_click', String(this.id), {{priority:'event'}});
+        }});
+        $(document).on('click', '.dcp-map-clear', function(e) {{
+            e.preventDefault();
+            Shiny.setInputValue('dcp_state_click', '', {{priority:'event'}});
+        }});
     }});
     """)),
     make_header(CACHE_UPDATED_AT),
@@ -194,6 +203,9 @@ app_ui = ui.page_fluid(
             id="dc-matrix-wrapper",
             class_="dc-page-wrapper",
         ),
+
+        # Painel executivo DataCenters
+        ui.output_ui("datacenters_panel_page"),
 
         # Detalhe MUST
         ui.output_ui("detail_page"),

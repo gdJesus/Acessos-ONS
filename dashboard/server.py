@@ -1,12 +1,13 @@
 """Lógica reativa e renderizações do Shiny."""
 
 import os
+import re
 import tempfile
 from datetime import datetime
 
 import pandas as pd
 from shiny import Inputs, Outputs, Session, reactive, render, ui
-from htmltools import tags
+from htmltools import HTML, tags
 
 from .constants import UF_MAP
 from .data import (
@@ -71,6 +72,14 @@ def _apply_manual_must_overrides(proto, year_values):
 
 
 INICIO_HORIZONTE_LABEL = "Início do horizonte"
+
+_BRAZIL_MAP_PATH = os.path.join(os.path.dirname(__file__), "assets", "brazil_map.svg")
+try:
+    with open(_BRAZIL_MAP_PATH, "r", encoding="utf-8") as _map_file:
+        BRAZIL_MAP_SVG = _map_file.read()
+except OSError:
+    BRAZIL_MAP_SVG = ""
+BRAZIL_MAP_SVG = re.sub(r"<style\b[^>]*>.*?</style>", "", BRAZIL_MAP_SVG, flags=re.S)
 
 
 def _display_ano_label(label):
@@ -748,6 +757,7 @@ def server(input: Inputs, output: Outputs, session: Session):
     selected_proto = reactive.value(None)
     point_idx = reactive.value(0)
     selected_dc = reactive.value(None)
+    dc_panel_state = reactive.value("")
     dc_status_filter = reactive.value("todos")
     overview_matrix_rows_cache = reactive.value([])
     overview_emitido_pl_filter = reactive.value("")  # "" | "nao" | "sim"
@@ -945,6 +955,11 @@ def server(input: Inputs, output: Outputs, session: Session):
     def _go_datacenters():
         current_page.set("datacenters")
 
+    @reactive.effect
+    @reactive.event(input.nav_datacenters_panel)
+    def _go_datacenters_panel():
+        current_page.set("datacenters_panel")
+
     # --- DC: row click → detail ---
     @reactive.effect
     @reactive.event(input.selected_dc_item)
@@ -1079,6 +1094,23 @@ def server(input: Inputs, output: Outputs, session: Session):
         dcm_emitido_pl_filter.set("")
 
     @reactive.effect
+    @reactive.event(input.dcp_reset)
+    def _():
+        years = _dcp_horizon_years()
+        ui.update_selectize("dcp_period_years", selected=[str(y) for y in years])
+        ui.update_select("dcp_year", selected="latest")
+        dc_panel_state.set("")
+
+    @reactive.effect
+    @reactive.event(input.dcp_state_click)
+    def _toggle_dc_panel_state():
+        uf = str(input.dcp_state_click() or "").strip().upper()
+        if not uf or uf == dc_panel_state.get():
+            dc_panel_state.set("")
+        elif uf in UF_MAP:
+            dc_panel_state.set(uf)
+
+    @reactive.effect
     @reactive.event(input.selected_protocol)
     def _on_row_click():
         proto = input.selected_protocol()
@@ -1115,9 +1147,11 @@ def server(input: Inputs, output: Outputs, session: Session):
     @reactive.effect
     def _update_nav_styles():
         page = current_page.get()
-        script = "$('#nav_overview,#nav_datacenters').removeClass('active');"
+        script = "$('#nav_overview,#nav_datacenters,#nav_datacenters_panel').removeClass('active');"
         if page in ("overview", "overview_matrix", "detail"):
             script += "$('#nav_overview').addClass('active');"
+        elif page == "datacenters_panel":
+            script += "$('#nav_datacenters_panel').addClass('active');"
         else:  # datacenters or datacenters_detail or datacenters_matrix
             script += "$('#nav_datacenters').addClass('active');"
 
@@ -1129,6 +1163,8 @@ def server(input: Inputs, output: Outputs, session: Session):
             script += "$('#filters-dc').css('display', 'block');"
         elif page == "datacenters_matrix":
             script += "$('#filters-dcm').css('display', 'block');"
+        elif page == "datacenters_panel":
+            script += "$('#filters-dcp').css('display', 'block');"
 
         # Mostrar/esconder páginas DataCenters conforme a navegação
         script += "$('#dc-list-wrapper, #dc-matrix-wrapper').css('display', 'none');"
@@ -1836,6 +1872,11 @@ def server(input: Inputs, output: Outputs, session: Session):
             ui.update_selectize(f"{prefix}_viab", choices=viab_choices, selected=[])
             ui.update_selectize(f"{prefix}_status", choices=status_choices, selected=[])
             ui.update_select(f"{prefix}_sort", selected="data_asc")
+        dcp_years = _dcp_horizon_years()
+        dcp_year_choices = {"latest": "Último ano do horizonte"}
+        dcp_year_choices.update({str(y): str(y) for y in dcp_years})
+        ui.update_selectize("dcp_period_years", choices={str(y): str(y) for y in dcp_years}, selected=[str(y) for y in dcp_years])
+        ui.update_select("dcp_year", choices=dcp_year_choices, selected="latest")
 
     def _dc_filtered_rows():
         """Aplica todos os filtros e ordena. Usado pela lista e pela matriz."""
@@ -2126,6 +2167,355 @@ def server(input: Inputs, output: Outputs, session: Session):
             tags.td(tags.span(cust_label, class_=cust_pill_class), style="text-align:center;"),
             tags.td(tags.span(viab, class_=viab_pill_class), style="text-align:center;"),
             **{"data-dc": str(r["item"]), "data-ponto-idx": str(r.get("ponto_idx", 0))},
+        )
+
+    def _dcp_num(value):
+        if value is None:
+            return 0.0
+        try:
+            if pd.isna(value):
+                return 0.0
+        except Exception:
+            pass
+        try:
+            return float(str(value).replace(".", "").replace(",", "."))
+        except Exception:
+            return 0.0
+
+    def _dcp_fmt(value):
+        value = _dcp_num(value)
+        return f"{int(round(value)):,.0f}".replace(",", ".")
+
+    def _dcp_year_mw(r, year):
+        vals = _year_dict_get(r.get("year_values") or {}, year)
+        ponta = _dcp_num(vals.get("ponta"))
+        fora = _dcp_num(vals.get("fora"))
+        return max(ponta, fora)
+
+    def _dcp_horizon_years():
+        years = sorted({
+            int(y)
+            for r in DATACENTER_ROWS
+            if r.get("rede") == "RB"
+            for y, st in (r.get("year_status") or {}).items()
+            if st in ("current", "contractable")
+        })
+        if years:
+            return years
+        return sorted({
+            int(y)
+            for r in DATACENTER_ROWS
+            if r.get("rede") == "RB"
+            for y, vals in (r.get("year_values") or {}).items()
+            if _dcp_num(vals.get("ponta")) or _dcp_num(vals.get("fora"))
+        })
+
+    def _dcp_period_years():
+        available = _dcp_horizon_years()
+        try:
+            selected = [int(y) for y in (input.dcp_period_years() or [])]
+        except Exception:
+            selected = []
+        selected = [y for y in selected if y in available]
+        return selected or available
+
+    def _dcp_reference_year():
+        years = _dcp_horizon_years()
+        try:
+            selected = input.dcp_year() or "latest"
+        except Exception:
+            selected = "latest"
+        if selected != "latest":
+            try:
+                return int(selected)
+            except Exception:
+                pass
+        return max(years) if years else None
+
+    def _dcp_base_rows(include_state=True):
+        selected_uf = dc_panel_state.get() if include_state else ""
+        rows = [r for r in DATACENTER_ROWS if r.get("rede") == "RB"]
+        if selected_uf:
+            rows = [r for r in rows if str(r.get("uf") or "").upper() == selected_uf]
+        return rows
+
+    def _dcp_year_viab(r, year):
+        viab_data = r.get("viabilidade_anos") or {}
+        anos = viab_data.get("anos") or {}
+        vals = _year_dict_get(anos, year)
+        return (
+            str(vals.get("viabilidade") or "").strip()
+            or str(viab_data.get("viabilidade_geral") or "").strip()
+            or str(r.get("viabilidade_resumo") or "").strip()
+            or "Em análise"
+        )
+
+    def _dcp_viab_category(viab):
+        text = str(viab or "").strip().lower()
+        if "invi" in text or "cancel" in text or "anul" in text:
+            return "inviavel"
+        if "viável" in text or "viavel" in text or "condicionado" in text or "limitado" in text:
+            return "aprovado"
+        return "analise"
+
+    def _dcp_aggregate_year(rows, year):
+        acc = {"aprovado": 0.0, "inviavel": 0.0, "analise": 0.0, "projetos": 0}
+        if year is None:
+            return acc
+        for r in rows:
+            mw = _dcp_year_mw(r, year)
+            if not mw:
+                continue
+            acc["projetos"] += 1
+            acc[_dcp_viab_category(_dcp_year_viab(r, year))] += mw
+        return acc
+
+    def _dcp_total(acc):
+        return acc.get("aprovado", 0.0) + acc.get("inviavel", 0.0) + acc.get("analise", 0.0)
+
+    def _dcp_year_series(rows, years):
+        return [
+            {"year": y, **_dcp_aggregate_year(rows, y)}
+            for y in years
+        ]
+
+    def _dcp_state_totals(year):
+        totals = {}
+        if year is None:
+            return totals
+        for r in _dcp_base_rows(include_state=False):
+            uf = str(r.get("uf") or "").upper()
+            if uf not in UF_MAP:
+                continue
+            totals[uf] = totals.get(uf, 0.0) + _dcp_year_mw(r, year)
+        return totals
+
+    def _dcp_state_summary(rows, year):
+        acc = _dcp_aggregate_year(rows, year)
+        total = _dcp_total(acc)
+        cust = sum(
+            _dcp_year_mw(r, year)
+            for r in rows
+            if year is not None and r.get("cust_status") == "assinado" and _dcp_year_mw(r, year)
+        )
+        return {
+            "projetos": acc["projetos"],
+            "total": total,
+            "aprovado": acc["aprovado"],
+            "inviavel": acc["inviavel"],
+            "analise": acc["analise"],
+            "cust": cust,
+        }
+
+    def _dcp_pct(value, total):
+        return "0,0%" if not total else f"{(100 * value / total):.1f}%".replace(".", ",")
+
+    def _dcp_card(title, value, sub, tone, icon):
+        return tags.div(
+            tags.div(icon, class_=f"dcp-card-icon {tone}"),
+            tags.div(
+                tags.div(title, class_="dcp-card-title"),
+                tags.div(value, class_="dcp-card-value"),
+                tags.div(sub, class_="dcp-card-sub"),
+                class_="dcp-card-copy",
+            ),
+            class_="dcp-kpi-card",
+        )
+
+    def _dcp_chart(series, title, include_inviavel=True, include_line=False):
+        width, height = 760, 260
+        left, right, top, bottom = 54, 20, 24, 42
+        plot_w = width - left - right
+        plot_h = height - top - bottom
+        years = [s["year"] for s in series]
+        totals = [
+            s.get("aprovado", 0.0) + s.get("analise", 0.0) + (s.get("inviavel", 0.0) if include_inviavel else 0.0)
+            for s in series
+        ]
+        max_total = max(totals) if totals else 0
+        max_total = max_total or 1
+        step = plot_w / max(len(series), 1)
+        bar_w = min(46, step * 0.45)
+        colors = {"aprovado": "#16A34A", "inviavel": "#DC2626", "analise": "#2563EB"}
+        labels = {"aprovado": "Aprovado", "inviavel": "Inviável", "analise": "Em análise"}
+
+        elems = []
+        for i in range(5):
+            y = top + plot_h - (plot_h * i / 4)
+            val = max_total * i / 4
+            elems.append(tags.line(x1=left, y1=y, x2=width - right, y2=y, class_="dcp-chart-grid"))
+            elems.append(tags.text(_dcp_fmt(val), x=left - 10, y=y + 4, class_="dcp-chart-axis", **{"text-anchor": "end"}))
+        elems.append(tags.line(x1=left, y1=top + plot_h, x2=width - right, y2=top + plot_h, class_="dcp-chart-axis-line"))
+
+        line_points = []
+        keys = ["aprovado", "inviavel", "analise"] if include_inviavel else ["aprovado", "analise"]
+        for idx, item in enumerate(series):
+            x = left + step * idx + step / 2
+            y_base = top + plot_h
+            total = sum(item.get(k, 0.0) for k in keys)
+            line_y = top + plot_h - (total / max_total * plot_h)
+            line_points.append(f"{x:.1f},{line_y:.1f}")
+            for key in keys:
+                val = item.get(key, 0.0)
+                h = val / max_total * plot_h
+                if h <= 0:
+                    continue
+                y_base -= h
+                elems.append(tags.rect(x=x - bar_w / 2, y=y_base, width=bar_w, height=max(h, 1), fill=colors[key], rx=2))
+                if h > 18:
+                    elems.append(tags.text(_dcp_fmt(val), x=x, y=y_base + h / 2 + 4, class_="dcp-chart-bar-label", **{"text-anchor": "middle"}))
+            elems.append(tags.text(str(item["year"]), x=x, y=top + plot_h + 24, class_="dcp-chart-axis", **{"text-anchor": "middle"}))
+            if total:
+                elems.append(tags.text(_dcp_fmt(total), x=x, y=max(12, line_y - 8), class_="dcp-chart-total", **{"text-anchor": "middle"}))
+
+        if include_line and line_points:
+            elems.append(tags.polyline(points=" ".join(line_points), fill="none", stroke="#111827", **{"stroke-width": "2.5"}))
+            for point in line_points:
+                x, y = point.split(",")
+                elems.append(tags.circle(cx=x, cy=y, r=3.5, fill="#111827"))
+
+        legend_items = []
+        legend_keys = keys + (["total"] if include_line else [])
+        legend_colors = {**colors, "total": "#111827"}
+        legend_labels = {**labels, "total": "Total"}
+        for key in legend_keys:
+            legend_items.append(tags.span(tags.span(style=f"background:{legend_colors[key]};", class_="dcp-legend-swatch"), legend_labels[key], class_="dcp-legend-item"))
+
+        return tags.div(
+            tags.div(
+                tags.div(title, class_="dcp-panel-title"),
+                tags.div(tags.span("Exibir: MW", class_="dcp-toggle active"), tags.span("Projetos", class_="dcp-toggle"), class_="dcp-chart-toggle"),
+                class_="dcp-panel-head",
+            ),
+            tags.svg(*elems, viewBox=f"0 0 {width} {height}", class_="dcp-chart-svg", role="img"),
+            tags.div(*legend_items, class_="dcp-chart-legend"),
+            class_="dcp-panel dcp-chart-panel",
+        )
+
+    def _dcp_map_color(value, max_value):
+        if not value:
+            return "#E5E7EB"
+        ratio = min(max(value / max_value, 0.0), 1.0) if max_value else 0.0
+        if ratio >= 0.75:
+            return "#166534"
+        if ratio >= 0.45:
+            return "#22C55E"
+        if ratio >= 0.20:
+            return "#86EFAC"
+        return "#DCFCE7"
+
+    def _dcp_map(state_totals, selected_uf):
+        max_value = max(state_totals.values()) if state_totals else 1
+        rules = []
+        for uf in UF_MAP:
+            rules.append(f".dcp-brazil-map #{uf} {{ fill: {_dcp_map_color(state_totals.get(uf, 0.0), max_value)} !important; }}")
+        if selected_uf:
+            rules.append(f".dcp-brazil-map #{selected_uf} {{ stroke: #14532D !important; stroke-width: 2.4 !important; }}")
+        return tags.div(
+            tags.style("\n".join(rules)),
+            HTML(BRAZIL_MAP_SVG),
+            class_="dcp-brazil-map",
+        )
+
+    def _dcp_ranking(state_totals, year):
+        rows = sorted(state_totals.items(), key=lambda item: item[1], reverse=True)[:8]
+        trs = []
+        for idx, (uf, total) in enumerate(rows, start=1):
+            all_rows = [r for r in _dcp_base_rows(include_state=False) if str(r.get("uf") or "").upper() == uf]
+            acc = _dcp_aggregate_year(all_rows, year)
+            cls = "selected" if uf == dc_panel_state.get() else ""
+            trs.append(tags.tr(
+                tags.td(str(idx), class_="dcp-rank-num"),
+                tags.td(f"{UF_MAP.get(uf, uf)}", class_="dcp-rank-state"),
+                tags.td(_dcp_fmt(total), class_="dcp-rank-mw"),
+                tags.td(_dcp_fmt(acc["aprovado"]), class_="dcp-rank-mw"),
+                tags.td(_dcp_pct(acc["aprovado"], total), class_="dcp-rank-pct"),
+                class_=cls,
+            ))
+        return tags.div(
+            tags.div("Ranking de Estados por MW solicitados", class_="dcp-panel-title"),
+            tags.table(
+                tags.thead(tags.tr(
+                    tags.th("#"),
+                    tags.th("Estado"),
+                    tags.th("MW solic."),
+                    tags.th("Aprov."),
+                    tags.th("% aprov."),
+                )),
+                tags.tbody(*trs),
+                class_="dcp-ranking-table",
+            ),
+            class_="dcp-panel dcp-ranking-panel",
+        )
+
+    @output
+    @render.ui
+    def datacenters_panel_page():
+        if current_page.get() != "datacenters_panel":
+            return tags.div(style="display:none")
+
+        ref_year = _dcp_reference_year()
+        period_years = _dcp_period_years()
+        rows = _dcp_base_rows(include_state=True)
+        all_rows = _dcp_base_rows(include_state=False)
+        summary = _dcp_state_summary(rows, ref_year)
+        total = summary["total"]
+        selected_uf = dc_panel_state.get()
+        state_totals = _dcp_state_totals(ref_year)
+        series = _dcp_year_series(rows, period_years)
+        possible_series = [
+            {**item, "inviavel": 0.0}
+            for item in series
+        ]
+        map_rows = [r for r in all_rows if str(r.get("uf") or "").upper() == selected_uf] if selected_uf else all_rows
+        map_summary = _dcp_state_summary(map_rows, ref_year)
+        map_title = f"{UF_MAP[selected_uf]} ({selected_uf})" if selected_uf else "Todos os estados"
+
+        return tags.div(
+            tags.div(
+                tags.div("Painel DataCenters", class_="page-title"),
+                tags.div(
+                    f"Rede RB | Ano de referência: {ref_year or '—'} | Período: {period_years[0] if period_years else '—'}–{period_years[-1] if period_years else '—'}",
+                    class_="page-subtitle",
+                ),
+                class_="dcp-title-row",
+            ),
+            tags.div(
+                _dcp_card("Projetos", _dcp_fmt(summary["projetos"]), "Total no ano de referência", "neutral", "▦"),
+                _dcp_card("MW solicitados", _dcp_fmt(total), "Total no ano de referência", "cyan", "⚡"),
+                _dcp_card("Aprovados", _dcp_fmt(summary["aprovado"]), f"{_dcp_pct(summary['aprovado'], total)} do total", "green", "✓"),
+                _dcp_card("Em análise", _dcp_fmt(summary["analise"]), f"{_dcp_pct(summary['analise'], total)} do total", "blue", "◷"),
+                _dcp_card("Inviáveis", _dcp_fmt(summary["inviavel"]), f"{_dcp_pct(summary['inviavel'], total)} do total", "red", "×"),
+                _dcp_card("CUST assinados", _dcp_fmt(summary["cust"]), f"{_dcp_pct(summary['cust'], total)} do total", "purple", "◇"),
+                class_="dcp-kpi-row",
+            ),
+            tags.div(
+                tags.div(
+                    tags.div("Mapa de Projetos", class_="dcp-panel-title"),
+                    tags.div("Selecione um estado para filtrar", class_="dcp-muted"),
+                    _dcp_map(state_totals, selected_uf),
+                    tags.div(
+                        tags.div("Estado selecionado", class_="dcp-selected-label"),
+                        tags.div(map_title, class_="dcp-selected-title"),
+                        tags.div(
+                            tags.div(tags.span("Projetos"), tags.strong(_dcp_fmt(map_summary["projetos"]))),
+                            tags.div(tags.span("MW solic."), tags.strong(_dcp_fmt(map_summary["total"]))),
+                            tags.div(tags.span("Aprovados"), tags.strong(_dcp_fmt(map_summary["aprovado"]))),
+                            class_="dcp-selected-stats",
+                        ),
+                        tags.button("Limpar seleção", class_="dcp-map-clear") if selected_uf else None,
+                        class_="dcp-selected-card",
+                    ),
+                    class_="dcp-panel dcp-map-panel",
+                ),
+                _dcp_chart(series, f"Montante Total de DCs que chegou no ONS — {selected_uf or 'RB'}", include_inviavel=True, include_line=False),
+                class_="dcp-top-grid",
+            ),
+            tags.div(
+                _dcp_chart(possible_series, f"Evolução do montante total de possíveis DCs em {selected_uf or 'RB'}", include_inviavel=False, include_line=True),
+                _dcp_ranking(state_totals, ref_year),
+                class_="dcp-bottom-grid",
+            ),
         )
 
     @output

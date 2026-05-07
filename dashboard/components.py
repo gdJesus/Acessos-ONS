@@ -197,6 +197,31 @@ def _datacenters_filters_section(prefix="dc", section_id="filters-dc", hidden=Tr
     )
 
 
+def _datacenters_panel_filters_section():
+    return tags.div(
+        tags.div("Filtros do Painel", class_="sidebar-section-title"),
+        tags.div(
+            tags.div("Período:", class_="filter-label"),
+            ui.input_selectize("dcp_period_years", "", choices={}, selected=[], multiple=True, options={"placeholder": "Todos"}),
+            class_="filter-group",
+        ),
+        tags.div(
+            tags.div("Ano de referência:", class_="filter-label"),
+            ui.input_select("dcp_year", "", choices={"latest": "Último ano do horizonte"}, selected="latest"),
+            class_="filter-group",
+        ),
+        tags.div(
+            tags.div("Rede:", class_="filter-label"),
+            tags.div("RB", class_="filter-static-value"),
+            class_="filter-group",
+        ),
+        ui.input_action_button("dcp_reset", "↺ Limpar filtros", class_="filter-reset"),
+        id="filters-dcp",
+        class_="sidebar-section sidebar-filters-section",
+        style="display:none;",
+    )
+
+
 def make_sidebar():
     return tags.div(
         # Navegação
@@ -204,11 +229,13 @@ def make_sidebar():
             tags.div("Navegação", class_="sidebar-section-title"),
             ui.input_action_button("nav_overview", "", class_="nav-btn active"),
             ui.input_action_button("nav_datacenters", "", class_="nav-btn"),
+            ui.input_action_button("nav_datacenters_panel", "", class_="nav-btn"),
             class_="sidebar-section",
         ),
         tags.div(class_="sidebar-divider"),
         _overview_filters_section(),
         _datacenters_filters_section("dc", "filters-dc", hidden=True),
         _datacenters_filters_section("dcm", "filters-dcm", hidden=True),
+        _datacenters_panel_filters_section(),
         class_="app-sidebar",
     )

@@ -180,6 +180,9 @@ app_ui = ui.page_fluid(
             e.preventDefault();
             Shiny.setInputValue('dcp_metric', String($(this).data('metric')), {{priority:'event'}});
         }});
+        $(document).on('change', '.dcp-chart-select', function(e) {{
+            Shiny.setInputValue('dcp_chart_type', String($(this).val()), {{priority:'event'}});
+        }});
     }});
     """)),
     make_header(CACHE_UPDATED_AT),

@@ -701,11 +701,6 @@ html, body {
   gap: 16px;
   align-items: stretch;
 }
-.dcp-chart-stack {
-  display: grid;
-  grid-template-rows: repeat(2, minmax(0, 1fr));
-  gap: 16px;
-}
 .dcp-panel {
   background: var(--white);
   border: 1px solid var(--border-light);
@@ -714,7 +709,7 @@ html, body {
   padding: 16px 18px;
   overflow: hidden;
 }
-.dcp-chart-panel { display: flex; flex-direction: column; min-height: 0; }
+.dcp-chart-panel { display: flex; flex-direction: column; min-height: 100%; }
 .dcp-panel-head {
   display: flex;
   align-items: center;
@@ -726,6 +721,22 @@ html, body {
   font-size: 14px;
   font-weight: 800;
   color: var(--text);
+}
+.dcp-panel-title-control { min-width: 0; flex: 1; }
+.dcp-chart-select {
+  width: 100%;
+  max-width: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-weight: 800;
+  cursor: pointer;
+  outline: none;
+}
+.dcp-chart-select:focus-visible {
+  box-shadow: 0 0 0 2px rgba(34, 197, 94, 0.35);
+  border-radius: 5px;
 }
 .dcp-muted { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
 .dcp-chart-toggle {
@@ -773,6 +784,9 @@ html, body {
   font-family: 'JetBrains Mono', monospace;
   font-size: 10px;
   font-weight: 900;
+  paint-order: stroke;
+  stroke: #FFFFFF;
+  stroke-width: 3px;
 }
 .dcp-chart-small-label.red { fill: #B91C1C; }
 .dcp-chart-legend {

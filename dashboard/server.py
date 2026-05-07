@@ -762,6 +762,7 @@ def server(input: Inputs, output: Outputs, session: Session):
     selected_dc = reactive.value(None)
     dc_panel_state = reactive.value("")
     dc_panel_metric = reactive.value("mw")
+    dc_panel_chart_type = reactive.value("received")
     dc_status_filter = reactive.value("todos")
     overview_matrix_rows_cache = reactive.value([])
     overview_emitido_pl_filter = reactive.value("")  # "" | "nao" | "sim"
@@ -1120,6 +1121,13 @@ def server(input: Inputs, output: Outputs, session: Session):
         metric = str(input.dcp_metric() or "").strip()
         if metric in ("mw", "projects"):
             dc_panel_metric.set(metric)
+
+    @reactive.effect
+    @reactive.event(input.dcp_chart_type)
+    def _toggle_dc_panel_chart_type():
+        chart_type = str(input.dcp_chart_type() or "").strip()
+        if chart_type in ("received", "possible"):
+            dc_panel_chart_type.set(chart_type)
 
     @reactive.effect
     @reactive.event(input.selected_protocol)
@@ -2304,7 +2312,7 @@ def server(input: Inputs, output: Outputs, session: Session):
 
     def _dcp_viab_category(viab):
         text = str(viab or "").strip().lower()
-        if "invi" in text or "cancel" in text or "anul" in text:
+        if "invi" in text or "não vi" in text or "nao vi" in text or "negad" in text or "cancel" in text or "anul" in text:
             return "inviavel"
         if "viável" in text or "viavel" in text or "condicionado" in text or "limitado" in text:
             return "aprovado"
@@ -2416,18 +2424,29 @@ def server(input: Inputs, output: Outputs, session: Session):
             class_="dcp-kpi-card",
         )
 
-    def _dcp_chart(series, title, metric="mw", include_inviavel=True, include_line=False):
+    def _dcp_chart(series, selected_uf, chart_type="received", metric="mw", include_inviavel=True, include_line=False):
         width, height = 760, 260
         left, right, top, bottom = 54, 20, 24, 42
         plot_w = width - left - right
         plot_h = height - top - bottom
         years = [s["year"] for s in series]
+        state_label = selected_uf or "RB"
+        chart_type = chart_type if chart_type in ("received", "possible") else "received"
+        title_options = [
+            ("received", f"Montante Total de DCs que chegou no ONS — {state_label}"),
+            ("possible", f"Evolução do montante total de possíveis DCs em {state_label}"),
+        ]
         metric = metric if metric in ("mw", "projects") else "mw"
         fmt_value = _dcp_fmt_mw if metric == "mw" else _dcp_fmt
         def chart_value(item, key):
             if metric == "projects":
                 return item.get(f"{key}_projetos", 0)
             return item.get(key, 0.0)
+        def chart_option(value, label):
+            attrs = {"value": value}
+            if value == chart_type:
+                attrs["selected"] = "selected"
+            return tags.option(label, **attrs)
         totals = [
             chart_value(s, "aprovado") + chart_value(s, "analise") + (chart_value(s, "inviavel") if include_inviavel else 0)
             for s in series
@@ -2440,6 +2459,7 @@ def server(input: Inputs, output: Outputs, session: Session):
         labels = {"aprovado": "Aprovado", "inviavel": "Inviável", "analise": "Em análise"}
 
         elems = []
+        floating_labels = []
         for i in range(5):
             y = top + plot_h - (plot_h * i / 4)
             val = max_total * i / 4
@@ -2465,7 +2485,7 @@ def server(input: Inputs, output: Outputs, session: Session):
                 if h > 18:
                     elems.append(_svg_tag("text", fmt_value(val), x=x, y=y_base + h / 2 + 4, class_="dcp-chart-bar-label", **{"text-anchor": "middle"}))
                 elif key == "inviavel" and val > 0:
-                    elems.append(_svg_tag("text", fmt_value(val), x=x, y=max(12, y_base - 5), class_="dcp-chart-small-label red", **{"text-anchor": "middle"}))
+                    floating_labels.append(_svg_tag("text", fmt_value(val), x=x, y=max(12, y_base - 5), class_="dcp-chart-small-label red", **{"text-anchor": "middle"}))
             elems.append(_svg_tag("text", str(item["year"]), x=x, y=top + plot_h + 24, class_="dcp-chart-axis", **{"text-anchor": "middle"}))
             if total:
                 elems.append(_svg_tag("text", fmt_value(total), x=x, y=max(12, line_y - 8), class_="dcp-chart-total", **{"text-anchor": "middle"}))
@@ -2475,6 +2495,7 @@ def server(input: Inputs, output: Outputs, session: Session):
             for point in line_points:
                 x, y = point.split(",")
                 elems.append(_svg_tag("circle", cx=x, cy=y, r=3.5, fill="#111827"))
+        elems.extend(floating_labels)
 
         legend_items = []
         legend_keys = keys + (["total"] if include_line else [])
@@ -2485,7 +2506,14 @@ def server(input: Inputs, output: Outputs, session: Session):
 
         return tags.div(
             tags.div(
-                tags.div(title, class_="dcp-panel-title"),
+                tags.div(
+                    tags.select(
+                        *(chart_option(value, label) for value, label in title_options),
+                        class_="dcp-chart-select",
+                        **{"aria-label": "Tipo de gráfico"},
+                    ),
+                    class_="dcp-panel-title dcp-panel-title-control",
+                ),
                 tags.div(
                     tags.button("Exibir: MW", class_=f"dcp-toggle {'active' if metric == 'mw' else ''}", **{"data-metric": "mw", "type": "button"}),
                     tags.button("Projetos", class_=f"dcp-toggle {'active' if metric == 'projects' else ''}", **{"data-metric": "projects", "type": "button"}),
@@ -2568,9 +2596,13 @@ def server(input: Inputs, output: Outputs, session: Session):
         total = summary["total"]
         selected_uf = dc_panel_state.get()
         metric = dc_panel_metric.get()
+        chart_type = dc_panel_chart_type.get()
         state_totals = _dcp_state_totals(ref_year)
         series = _dcp_year_series(rows, period_years)
         possible_series = _dcp_possible_year_series(rows, period_years)
+        chart_series = possible_series if chart_type == "possible" else series
+        chart_include_inviavel = chart_type != "possible"
+        chart_include_line = chart_type == "possible"
         map_rows = [r for r in all_rows if str(r.get("uf") or "").upper() == selected_uf] if selected_uf else all_rows
         map_summary = _dcp_state_summary(map_rows, ref_year)
         map_title = f"{UF_MAP[selected_uf]} ({selected_uf})" if selected_uf else "Todos os estados"
@@ -2612,11 +2644,7 @@ def server(input: Inputs, output: Outputs, session: Session):
                     ),
                     class_="dcp-panel dcp-map-panel",
                 ),
-                tags.div(
-                    _dcp_chart(series, f"Montante Total de DCs que chegou no ONS — {selected_uf or 'RB'}", metric=metric, include_inviavel=True, include_line=False),
-                    _dcp_chart(possible_series, f"Evolução do montante total de possíveis DCs em {selected_uf or 'RB'}", metric=metric, include_inviavel=False, include_line=True),
-                    class_="dcp-chart-stack",
-                ),
+                _dcp_chart(chart_series, selected_uf, chart_type=chart_type, metric=metric, include_inviavel=chart_include_inviavel, include_line=chart_include_line),
                 _dcp_ranking(state_totals, ref_year),
                 class_="dcp-main-grid",
             ),

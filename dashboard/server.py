@@ -2195,10 +2195,7 @@ def server(input: Inputs, output: Outputs, session: Session):
         return f"{int(round(value)):,.0f}".replace(",", ".")
 
     def _dcp_fmt_mw(value):
-        value = _dcp_num(value)
-        if abs(value - round(value)) < 1e-9:
-            return f"{int(round(value)):,.0f}".replace(",", ".")
-        return f"{value:,.1f}".replace(",", "_").replace(".", ",").replace("_", ".")
+        return _dcp_fmt(value)
 
     def _dcp_values_mw(vals):
         ponta = _dcp_num(vals.get("ponta"))
@@ -2326,6 +2323,29 @@ def server(input: Inputs, output: Outputs, session: Session):
             for y in years
         ]
 
+    def _dcp_aggregate_possible_year(rows, year):
+        acc = {"aprovado": 0.0, "inviavel": 0.0, "analise": 0.0, "projetos": 0}
+        if year is None:
+            return acc
+        for r in rows:
+            mw = _dcp_year_mw(r, year)
+            if not mw:
+                continue
+            category = _dcp_viab_category(_dcp_year_viab(r, year))
+            if category == "inviavel":
+                continue
+            if category == "aprovado" and r.get("cust_status") != "assinado":
+                continue
+            acc["projetos"] += 1
+            acc[category] += mw
+        return acc
+
+    def _dcp_possible_year_series(rows, years):
+        return [
+            {"year": y, **_dcp_aggregate_possible_year(rows, y)}
+            for y in years
+        ]
+
     def _dcp_state_totals(year):
         totals = {}
         if year is None:
@@ -2355,7 +2375,7 @@ def server(input: Inputs, output: Outputs, session: Session):
         }
 
     def _dcp_pct(value, total):
-        return "0,0%" if not total else f"{(100 * value / total):.1f}%".replace(".", ",")
+        return "0%" if not total else f"{round(100 * value / total):.0f}%"
 
     def _dcp_card(title, value, sub, tone, icon):
         return tags.div(
@@ -2411,6 +2431,8 @@ def server(input: Inputs, output: Outputs, session: Session):
                 elems.append(_svg_tag("rect", x=x - bar_w / 2, y=y_base, width=bar_w, height=max(h, 1), fill=colors[key], rx=2))
                 if h > 18:
                     elems.append(_svg_tag("text", _dcp_fmt_mw(val), x=x, y=y_base + h / 2 + 4, class_="dcp-chart-bar-label", **{"text-anchor": "middle"}))
+                elif key == "inviavel" and val > 0:
+                    elems.append(_svg_tag("text", _dcp_fmt_mw(val), x=x, y=max(12, y_base - 5), class_="dcp-chart-small-label red", **{"text-anchor": "middle"}))
             elems.append(_svg_tag("text", str(item["year"]), x=x, y=top + plot_h + 24, class_="dcp-chart-axis", **{"text-anchor": "middle"}))
             if total:
                 elems.append(_svg_tag("text", _dcp_fmt_mw(total), x=x, y=max(12, line_y - 8), class_="dcp-chart-total", **{"text-anchor": "middle"}))
@@ -2510,10 +2532,7 @@ def server(input: Inputs, output: Outputs, session: Session):
         selected_uf = dc_panel_state.get()
         state_totals = _dcp_state_totals(ref_year)
         series = _dcp_year_series(rows, period_years)
-        possible_series = [
-            {**item, "inviavel": 0.0}
-            for item in series
-        ]
+        possible_series = _dcp_possible_year_series(rows, period_years)
         map_rows = [r for r in all_rows if str(r.get("uf") or "").upper() == selected_uf] if selected_uf else all_rows
         map_summary = _dcp_state_summary(map_rows, ref_year)
         map_title = f"{UF_MAP[selected_uf]} ({selected_uf})" if selected_uf else "Todos os estados"
@@ -2563,6 +2582,7 @@ def server(input: Inputs, output: Outputs, session: Session):
                 _dcp_ranking(state_totals, ref_year),
                 class_="dcp-main-grid",
             ),
+            class_="dcp-page",
         )
 
     @output

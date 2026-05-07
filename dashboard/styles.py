@@ -644,6 +644,10 @@ html, body {
 .dc-matrix-table tbody tr:hover { background: #F8FAFC; }
 
 /* ===== PAINEL EXECUTIVO DATA CENTERS ===== */
+.dcp-page {
+  width: 80%;
+  zoom: 1.25;
+}
 .dcp-title-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
 .dcp-kpi-row {
   display: grid;
@@ -760,6 +764,12 @@ html, body {
   font-weight: 800;
   fill: #111827;
 }
+.dcp-chart-small-label {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  font-weight: 900;
+}
+.dcp-chart-small-label.red { fill: #B91C1C; }
 .dcp-chart-legend {
   display: flex;
   justify-content: center;

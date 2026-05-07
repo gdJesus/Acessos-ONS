@@ -176,6 +176,10 @@ app_ui = ui.page_fluid(
             e.preventDefault();
             Shiny.setInputValue('dcp_state_click', '', {{priority:'event'}});
         }});
+        $(document).on('click', '.dcp-toggle[data-metric]', function(e) {{
+            e.preventDefault();
+            Shiny.setInputValue('dcp_metric', String($(this).data('metric')), {{priority:'event'}});
+        }});
     }});
     """)),
     make_header(CACHE_UPDATED_AT),

@@ -761,6 +761,7 @@ def server(input: Inputs, output: Outputs, session: Session):
     point_idx = reactive.value(0)
     selected_dc = reactive.value(None)
     dc_panel_state = reactive.value("")
+    dc_panel_metric = reactive.value("mw")
     dc_status_filter = reactive.value("todos")
     overview_matrix_rows_cache = reactive.value([])
     overview_emitido_pl_filter = reactive.value("")  # "" | "nao" | "sim"
@@ -1112,6 +1113,13 @@ def server(input: Inputs, output: Outputs, session: Session):
             dc_panel_state.set("")
         elif uf in UF_MAP:
             dc_panel_state.set(uf)
+
+    @reactive.effect
+    @reactive.event(input.dcp_metric)
+    def _toggle_dc_panel_metric():
+        metric = str(input.dcp_metric() or "").strip()
+        if metric in ("mw", "projects"):
+            dc_panel_metric.set(metric)
 
     @reactive.effect
     @reactive.event(input.selected_protocol)
@@ -2303,15 +2311,25 @@ def server(input: Inputs, output: Outputs, session: Session):
         return "analise"
 
     def _dcp_aggregate_year(rows, year):
-        acc = {"aprovado": 0.0, "inviavel": 0.0, "analise": 0.0, "projetos": 0}
+        acc = {
+            "aprovado": 0.0,
+            "inviavel": 0.0,
+            "analise": 0.0,
+            "projetos": 0,
+            "aprovado_projetos": 0,
+            "inviavel_projetos": 0,
+            "analise_projetos": 0,
+        }
         if year is None:
             return acc
         for r in rows:
             mw = _dcp_year_mw(r, year)
             if not mw:
                 continue
+            category = _dcp_viab_category(_dcp_year_viab(r, year))
             acc["projetos"] += 1
-            acc[_dcp_viab_category(_dcp_year_viab(r, year))] += mw
+            acc[category] += mw
+            acc[f"{category}_projetos"] += 1
         return acc
 
     def _dcp_total(acc):
@@ -2324,7 +2342,15 @@ def server(input: Inputs, output: Outputs, session: Session):
         ]
 
     def _dcp_aggregate_possible_year(rows, year):
-        acc = {"aprovado": 0.0, "inviavel": 0.0, "analise": 0.0, "projetos": 0}
+        acc = {
+            "aprovado": 0.0,
+            "inviavel": 0.0,
+            "analise": 0.0,
+            "projetos": 0,
+            "aprovado_projetos": 0,
+            "inviavel_projetos": 0,
+            "analise_projetos": 0,
+        }
         if year is None:
             return acc
         for r in rows:
@@ -2338,6 +2364,7 @@ def server(input: Inputs, output: Outputs, session: Session):
                 continue
             acc["projetos"] += 1
             acc[category] += mw
+            acc[f"{category}_projetos"] += 1
         return acc
 
     def _dcp_possible_year_series(rows, years):
@@ -2389,14 +2416,20 @@ def server(input: Inputs, output: Outputs, session: Session):
             class_="dcp-kpi-card",
         )
 
-    def _dcp_chart(series, title, include_inviavel=True, include_line=False):
+    def _dcp_chart(series, title, metric="mw", include_inviavel=True, include_line=False):
         width, height = 760, 260
         left, right, top, bottom = 54, 20, 24, 42
         plot_w = width - left - right
         plot_h = height - top - bottom
         years = [s["year"] for s in series]
+        metric = metric if metric in ("mw", "projects") else "mw"
+        fmt_value = _dcp_fmt_mw if metric == "mw" else _dcp_fmt
+        def chart_value(item, key):
+            if metric == "projects":
+                return item.get(f"{key}_projetos", 0)
+            return item.get(key, 0.0)
         totals = [
-            s.get("aprovado", 0.0) + s.get("analise", 0.0) + (s.get("inviavel", 0.0) if include_inviavel else 0.0)
+            chart_value(s, "aprovado") + chart_value(s, "analise") + (chart_value(s, "inviavel") if include_inviavel else 0)
             for s in series
         ]
         max_total = max(totals) if totals else 0
@@ -2411,7 +2444,7 @@ def server(input: Inputs, output: Outputs, session: Session):
             y = top + plot_h - (plot_h * i / 4)
             val = max_total * i / 4
             elems.append(_svg_tag("line", x1=left, y1=y, x2=width - right, y2=y, class_="dcp-chart-grid"))
-            elems.append(_svg_tag("text", _dcp_fmt_mw(val), x=left - 10, y=y + 4, class_="dcp-chart-axis", **{"text-anchor": "end"}))
+            elems.append(_svg_tag("text", fmt_value(val), x=left - 10, y=y + 4, class_="dcp-chart-axis", **{"text-anchor": "end"}))
         elems.append(_svg_tag("line", x1=left, y1=top + plot_h, x2=width - right, y2=top + plot_h, class_="dcp-chart-axis-line"))
 
         line_points = []
@@ -2419,23 +2452,23 @@ def server(input: Inputs, output: Outputs, session: Session):
         for idx, item in enumerate(series):
             x = left + step * idx + step / 2
             y_base = top + plot_h
-            total = sum(item.get(k, 0.0) for k in keys)
+            total = sum(chart_value(item, k) for k in keys)
             line_y = top + plot_h - (total / max_total * plot_h)
             line_points.append(f"{x:.1f},{line_y:.1f}")
             for key in keys:
-                val = item.get(key, 0.0)
+                val = chart_value(item, key)
                 h = val / max_total * plot_h
                 if h <= 0:
                     continue
                 y_base -= h
                 elems.append(_svg_tag("rect", x=x - bar_w / 2, y=y_base, width=bar_w, height=max(h, 1), fill=colors[key], rx=2))
                 if h > 18:
-                    elems.append(_svg_tag("text", _dcp_fmt_mw(val), x=x, y=y_base + h / 2 + 4, class_="dcp-chart-bar-label", **{"text-anchor": "middle"}))
+                    elems.append(_svg_tag("text", fmt_value(val), x=x, y=y_base + h / 2 + 4, class_="dcp-chart-bar-label", **{"text-anchor": "middle"}))
                 elif key == "inviavel" and val > 0:
-                    elems.append(_svg_tag("text", _dcp_fmt_mw(val), x=x, y=max(12, y_base - 5), class_="dcp-chart-small-label red", **{"text-anchor": "middle"}))
+                    elems.append(_svg_tag("text", fmt_value(val), x=x, y=max(12, y_base - 5), class_="dcp-chart-small-label red", **{"text-anchor": "middle"}))
             elems.append(_svg_tag("text", str(item["year"]), x=x, y=top + plot_h + 24, class_="dcp-chart-axis", **{"text-anchor": "middle"}))
             if total:
-                elems.append(_svg_tag("text", _dcp_fmt_mw(total), x=x, y=max(12, line_y - 8), class_="dcp-chart-total", **{"text-anchor": "middle"}))
+                elems.append(_svg_tag("text", fmt_value(total), x=x, y=max(12, line_y - 8), class_="dcp-chart-total", **{"text-anchor": "middle"}))
 
         if include_line and line_points:
             elems.append(_svg_tag("polyline", points=" ".join(line_points), fill="none", stroke="#111827", **{"stroke-width": "2.5"}))
@@ -2453,7 +2486,11 @@ def server(input: Inputs, output: Outputs, session: Session):
         return tags.div(
             tags.div(
                 tags.div(title, class_="dcp-panel-title"),
-                tags.div(tags.span("Exibir: MW", class_="dcp-toggle active"), tags.span("Projetos", class_="dcp-toggle"), class_="dcp-chart-toggle"),
+                tags.div(
+                    tags.button("Exibir: MW", class_=f"dcp-toggle {'active' if metric == 'mw' else ''}", **{"data-metric": "mw", "type": "button"}),
+                    tags.button("Projetos", class_=f"dcp-toggle {'active' if metric == 'projects' else ''}", **{"data-metric": "projects", "type": "button"}),
+                    class_="dcp-chart-toggle",
+                ),
                 class_="dcp-panel-head",
             ),
             tags.svg(*elems, viewBox=f"0 0 {width} {height}", class_="dcp-chart-svg", role="img"),
@@ -2530,6 +2567,7 @@ def server(input: Inputs, output: Outputs, session: Session):
         summary = _dcp_state_summary(rows, ref_year)
         total = summary["total"]
         selected_uf = dc_panel_state.get()
+        metric = dc_panel_metric.get()
         state_totals = _dcp_state_totals(ref_year)
         series = _dcp_year_series(rows, period_years)
         possible_series = _dcp_possible_year_series(rows, period_years)
@@ -2575,8 +2613,8 @@ def server(input: Inputs, output: Outputs, session: Session):
                     class_="dcp-panel dcp-map-panel",
                 ),
                 tags.div(
-                    _dcp_chart(series, f"Montante Total de DCs que chegou no ONS — {selected_uf or 'RB'}", include_inviavel=True, include_line=False),
-                    _dcp_chart(possible_series, f"Evolução do montante total de possíveis DCs em {selected_uf or 'RB'}", include_inviavel=False, include_line=True),
+                    _dcp_chart(series, f"Montante Total de DCs que chegou no ONS — {selected_uf or 'RB'}", metric=metric, include_inviavel=True, include_line=False),
+                    _dcp_chart(possible_series, f"Evolução do montante total de possíveis DCs em {selected_uf or 'RB'}", metric=metric, include_inviavel=False, include_line=True),
                     class_="dcp-chart-stack",
                 ),
                 _dcp_ranking(state_totals, ref_year),

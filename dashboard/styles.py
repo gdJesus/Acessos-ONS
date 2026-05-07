@@ -644,10 +644,6 @@ html, body {
 .dc-matrix-table tbody tr:hover { background: #F8FAFC; }
 
 /* ===== PAINEL EXECUTIVO DATA CENTERS ===== */
-.dcp-page {
-  width: 80%;
-  zoom: 1.25;
-}
 .dcp-title-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
 .dcp-kpi-row {
   display: grid;
@@ -742,7 +738,16 @@ html, body {
   color: var(--text-muted);
   white-space: nowrap;
 }
-.dcp-toggle { padding: 4px 10px; border-radius: 5px; }
+.dcp-toggle {
+  padding: 4px 10px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
 .dcp-toggle.active { background: var(--white); color: var(--text); box-shadow: var(--shadow); }
 .dcp-chart-svg { width: 100%; height: 210px; display: block; flex: 1; min-height: 180px; }
 .dcp-chart-grid { stroke: #E5E7EB; stroke-dasharray: 3 4; }

@@ -7,7 +7,7 @@ from datetime import datetime
 
 import pandas as pd
 from shiny import Inputs, Outputs, Session, reactive, render, ui
-from htmltools import HTML, tags
+from htmltools import HTML, Tag, tags
 
 from .constants import UF_MAP
 from .data import (
@@ -80,6 +80,10 @@ try:
 except OSError:
     BRAZIL_MAP_SVG = ""
 BRAZIL_MAP_SVG = re.sub(r"<style\b[^>]*>.*?</style>", "", BRAZIL_MAP_SVG, flags=re.S)
+
+
+def _svg_tag(name, *children, **attrs):
+    return Tag(name, *children, **attrs)
 
 
 def _display_ano_label(label):
@@ -2343,9 +2347,9 @@ def server(input: Inputs, output: Outputs, session: Session):
         for i in range(5):
             y = top + plot_h - (plot_h * i / 4)
             val = max_total * i / 4
-            elems.append(tags.line(x1=left, y1=y, x2=width - right, y2=y, class_="dcp-chart-grid"))
-            elems.append(tags.text(_dcp_fmt(val), x=left - 10, y=y + 4, class_="dcp-chart-axis", **{"text-anchor": "end"}))
-        elems.append(tags.line(x1=left, y1=top + plot_h, x2=width - right, y2=top + plot_h, class_="dcp-chart-axis-line"))
+            elems.append(_svg_tag("line", x1=left, y1=y, x2=width - right, y2=y, class_="dcp-chart-grid"))
+            elems.append(_svg_tag("text", _dcp_fmt(val), x=left - 10, y=y + 4, class_="dcp-chart-axis", **{"text-anchor": "end"}))
+        elems.append(_svg_tag("line", x1=left, y1=top + plot_h, x2=width - right, y2=top + plot_h, class_="dcp-chart-axis-line"))
 
         line_points = []
         keys = ["aprovado", "inviavel", "analise"] if include_inviavel else ["aprovado", "analise"]
@@ -2361,18 +2365,18 @@ def server(input: Inputs, output: Outputs, session: Session):
                 if h <= 0:
                     continue
                 y_base -= h
-                elems.append(tags.rect(x=x - bar_w / 2, y=y_base, width=bar_w, height=max(h, 1), fill=colors[key], rx=2))
+                elems.append(_svg_tag("rect", x=x - bar_w / 2, y=y_base, width=bar_w, height=max(h, 1), fill=colors[key], rx=2))
                 if h > 18:
-                    elems.append(tags.text(_dcp_fmt(val), x=x, y=y_base + h / 2 + 4, class_="dcp-chart-bar-label", **{"text-anchor": "middle"}))
-            elems.append(tags.text(str(item["year"]), x=x, y=top + plot_h + 24, class_="dcp-chart-axis", **{"text-anchor": "middle"}))
+                    elems.append(_svg_tag("text", _dcp_fmt(val), x=x, y=y_base + h / 2 + 4, class_="dcp-chart-bar-label", **{"text-anchor": "middle"}))
+            elems.append(_svg_tag("text", str(item["year"]), x=x, y=top + plot_h + 24, class_="dcp-chart-axis", **{"text-anchor": "middle"}))
             if total:
-                elems.append(tags.text(_dcp_fmt(total), x=x, y=max(12, line_y - 8), class_="dcp-chart-total", **{"text-anchor": "middle"}))
+                elems.append(_svg_tag("text", _dcp_fmt(total), x=x, y=max(12, line_y - 8), class_="dcp-chart-total", **{"text-anchor": "middle"}))
 
         if include_line and line_points:
-            elems.append(tags.polyline(points=" ".join(line_points), fill="none", stroke="#111827", **{"stroke-width": "2.5"}))
+            elems.append(_svg_tag("polyline", points=" ".join(line_points), fill="none", stroke="#111827", **{"stroke-width": "2.5"}))
             for point in line_points:
                 x, y = point.split(",")
-                elems.append(tags.circle(cx=x, cy=y, r=3.5, fill="#111827"))
+                elems.append(_svg_tag("circle", cx=x, cy=y, r=3.5, fill="#111827"))
 
         legend_items = []
         legend_keys = keys + (["total"] if include_line else [])

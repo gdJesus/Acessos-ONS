@@ -2428,7 +2428,12 @@ def server(input: Inputs, output: Outputs, session: Session):
         cust = sum(
             _dcp_year_mw(r, year)
             for r in rows
-            if year is not None and r.get("cust_status") == "assinado" and _dcp_year_mw(r, year)
+            if (
+                year is not None
+                and r.get("cust_status") == "assinado"
+                and _dcp_year_mw(r, year)
+                and _dcp_viab_category(_dcp_year_viab(r, year)) == "aprovado"
+            )
         )
         return {
             "projetos": len(rows),

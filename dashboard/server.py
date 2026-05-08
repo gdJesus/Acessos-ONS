@@ -1296,7 +1296,7 @@ def server(input: Inputs, output: Outputs, session: Session):
         total_anulados = sum(1 for r in data if _classify_overview_status(r.get("status")) == "anulado")
 
         return tags.div(
-            tags.div("Visão Geral", class_="page-title"),
+            tags.div("Visão Geral (em desenvolvimento)", class_="page-title"),
             tags.div("Todos os protocolos SGA — quando houver detalhamento de MUST, clique em uma linha para ver o detalhe", class_="page-subtitle"),
             tags.div(
                 tags.div(

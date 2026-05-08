@@ -237,9 +237,9 @@ def make_sidebar():
         # Navegação
         tags.div(
             tags.div("Navegação", class_="sidebar-section-title"),
-            ui.input_action_button("nav_overview", "", class_="nav-btn"),
-            ui.input_action_button("nav_datacenters", "", class_="nav-btn"),
             ui.input_action_button("nav_datacenters_panel", "", class_="nav-btn active"),
+            ui.input_action_button("nav_datacenters", "", class_="nav-btn"),
+            ui.input_action_button("nav_overview", "", class_="nav-btn"),
             class_="sidebar-section",
         ),
         tags.div(class_="sidebar-divider"),

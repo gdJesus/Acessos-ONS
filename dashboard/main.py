@@ -134,7 +134,7 @@ app_ui = ui.page_fluid(
     ui.tags.script(HTML(f"""
     $(document).on('shiny:connected', function() {{
         {"$('body').addClass('no-sidebar');" if not SHOW_SIDEBAR else ""}
-        $('#nav_overview').html('<span class="dot"></span> Visão Geral');
+        $('#nav_overview').html('<span class="dot"></span> Visão Geral (em desenvolvimento)');
         $('#nav_datacenters').html('<span class="dot"></span> DataCenters');
         $('#nav_datacenters_panel').html('<span class="dot"></span> Painel DataCenters');
 

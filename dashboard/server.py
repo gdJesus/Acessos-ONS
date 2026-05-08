@@ -2336,7 +2336,9 @@ def server(input: Inputs, output: Outputs, session: Session):
 
     def _dcp_viab_category(viab):
         text = str(viab or "").strip().lower()
-        if "invi" in text or "não vi" in text or "nao vi" in text or "negad" in text or "cancel" in text or "anul" in text:
+        if "anul" in text:
+            return "anulado"
+        if "invi" in text or "não vi" in text or "nao vi" in text or "negad" in text or "cancel" in text:
             return "inviavel"
         if "viável" in text or "viavel" in text or "condicionado" in text or "limitado" in text:
             return "aprovado"
@@ -2347,10 +2349,12 @@ def server(input: Inputs, output: Outputs, session: Session):
             "aprovado": 0.0,
             "inviavel": 0.0,
             "analise": 0.0,
+            "anulado": 0.0,
             "projetos": 0,
             "aprovado_projetos": 0,
             "inviavel_projetos": 0,
             "analise_projetos": 0,
+            "anulado_projetos": 0,
         }
         if year is None:
             return acc
@@ -2365,7 +2369,7 @@ def server(input: Inputs, output: Outputs, session: Session):
         return acc
 
     def _dcp_total(acc):
-        return acc.get("aprovado", 0.0) + acc.get("inviavel", 0.0) + acc.get("analise", 0.0)
+        return acc.get("aprovado", 0.0) + acc.get("inviavel", 0.0) + acc.get("analise", 0.0) + acc.get("anulado", 0.0)
 
     def _dcp_year_series(rows, years):
         return [
@@ -2378,10 +2382,12 @@ def server(input: Inputs, output: Outputs, session: Session):
             "aprovado": 0.0,
             "inviavel": 0.0,
             "analise": 0.0,
+            "anulado": 0.0,
             "projetos": 0,
             "aprovado_projetos": 0,
             "inviavel_projetos": 0,
             "analise_projetos": 0,
+            "anulado_projetos": 0,
         }
         if year is None:
             return acc
@@ -2390,7 +2396,7 @@ def server(input: Inputs, output: Outputs, session: Session):
             if not mw:
                 continue
             category = _dcp_viab_category(_dcp_year_viab(r, year))
-            if category == "inviavel":
+            if category in ("inviavel", "anulado"):
                 continue
             if category == "aprovado" and r.get("cust_status") != "assinado":
                 continue
@@ -2471,16 +2477,14 @@ def server(input: Inputs, output: Outputs, session: Session):
             if value == chart_type:
                 attrs["selected"] = "selected"
             return tags.option(label, **attrs)
-        totals = [
-            chart_value(s, "aprovado") + chart_value(s, "analise") + (chart_value(s, "inviavel") if include_inviavel else 0)
-            for s in series
-        ]
+        keys = ["aprovado", "inviavel", "analise", "anulado"] if include_inviavel else ["aprovado", "analise"]
+        totals = [sum(chart_value(s, key) for key in keys) for s in series]
         max_total = max(totals) if totals else 0
         max_total = max_total or 1
         step = plot_w / max(len(series), 1)
         bar_w = min(46, step * 0.45)
-        colors = {"aprovado": "#16A34A", "inviavel": "#DC2626", "analise": "#2563EB"}
-        labels = {"aprovado": "Aprovado", "inviavel": "Inviável", "analise": "Em análise"}
+        colors = {"aprovado": "#16A34A", "inviavel": "#DC2626", "analise": "#2563EB", "anulado": "#6B7280"}
+        labels = {"aprovado": "Aprovado", "inviavel": "Inviável", "analise": "Em análise", "anulado": "Anulado"}
 
         elems = []
         bar_labels = []
@@ -2492,7 +2496,6 @@ def server(input: Inputs, output: Outputs, session: Session):
         elems.append(_svg_tag("line", x1=left, y1=top + plot_h, x2=width - right, y2=top + plot_h, class_="dcp-chart-axis-line"))
 
         line_points = []
-        keys = ["aprovado", "inviavel", "analise"] if include_inviavel else ["aprovado", "analise"]
         for idx, item in enumerate(series):
             x = left + step * idx + step / 2
             y_base = top + plot_h

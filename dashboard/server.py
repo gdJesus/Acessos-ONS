@@ -2468,7 +2468,7 @@ def server(input: Inputs, output: Outputs, session: Session):
 
     def _dcp_viab_category(viab):
         text = str(viab or "").strip().lower()
-        if "anul" in text:
+        if "anul" in text or "misto" in text or "mista" in text:
             return "aprovado"
         if "invi" in text or "não vi" in text or "nao vi" in text or "negad" in text or "cancel" in text:
             return "inviavel"
@@ -2476,24 +2476,35 @@ def server(input: Inputs, output: Outputs, session: Session):
             return "aprovado"
         return "analise"
 
-    def _dcp_track_project(project_mw, r, category, mw):
+    def _dcp_track_project(project_mw, project_seen, r, category, mw):
         key = _dcp_project_key(r)
         if not key:
+            return
+        project_seen.setdefault(key, set()).add(category)
+        if not _dcp_num(mw):
             return
         buckets = project_mw.setdefault(key, {"aprovado": 0.0, "inviavel": 0.0, "analise": 0.0, "anulado": 0.0})
         buckets[category] = buckets.get(category, 0.0) + _dcp_num(mw)
 
-    def _dcp_apply_project_counts(acc, project_mw):
+    def _dcp_apply_project_counts(acc, project_mw, project_seen):
         priority = {"aprovado": 1, "analise": 2, "inviavel": 3, "anulado": 0}
+        categories = ("aprovado", "inviavel", "analise", "anulado")
         acc["projetos"] = 0
-        for key in ("aprovado", "inviavel", "analise", "anulado"):
+        for key in categories:
             acc[f"{key}_projetos"] = 0
-        for buckets in project_mw.values():
-            category = max(
-                ("aprovado", "inviavel", "analise", "anulado"),
-                key=lambda k: (buckets.get(k, 0.0), priority.get(k, 0)),
-            )
-            if buckets.get(category, 0.0) <= 0:
+        for project_key in set(project_seen) | set(project_mw):
+            buckets = project_mw.get(project_key, {})
+            if any(buckets.get(k, 0.0) > 0 for k in categories):
+                category = max(
+                    categories,
+                    key=lambda k: (buckets.get(k, 0.0), priority.get(k, 0)),
+                )
+            else:
+                seen = project_seen.get(project_key, set())
+                if not seen:
+                    continue
+                category = max(seen, key=lambda k: priority.get(k, 0))
+            if category not in categories:
                 continue
             acc["projetos"] += 1
             acc[f"{category}_projetos"] += 1
@@ -2513,14 +2524,15 @@ def server(input: Inputs, output: Outputs, session: Session):
         if year is None:
             return acc
         project_mw = {}
+        project_seen = {}
         for r in rows:
+            category = _dcp_viab_category(_dcp_year_viab(r, year))
             mw = _dcp_panel_mw(r, year)
+            _dcp_track_project(project_mw, project_seen, r, category, mw)
             if not mw:
                 continue
-            category = _dcp_viab_category(_dcp_year_viab(r, year))
             acc[category] += mw
-            _dcp_track_project(project_mw, r, category, mw)
-        _dcp_apply_project_counts(acc, project_mw)
+        _dcp_apply_project_counts(acc, project_mw, project_seen)
         return acc
 
     def _dcp_total(acc):
@@ -2547,14 +2559,15 @@ def server(input: Inputs, output: Outputs, session: Session):
         if year is None:
             return acc
         project_mw = {}
+        project_seen = {}
         for r in rows:
+            category = _dcp_viab_category(_dcp_raw_year_viab(r, year))
             mw = _dcp_raw_panel_mw(r, year)
+            _dcp_track_project(project_mw, project_seen, r, category, mw)
             if not mw:
                 continue
-            category = _dcp_viab_category(_dcp_raw_year_viab(r, year))
             acc[category] += mw
-            _dcp_track_project(project_mw, r, category, mw)
-        _dcp_apply_project_counts(acc, project_mw)
+        _dcp_apply_project_counts(acc, project_mw, project_seen)
         return acc
 
     def _dcp_raw_year_series(rows, years):
@@ -2578,6 +2591,7 @@ def server(input: Inputs, output: Outputs, session: Session):
         if year is None:
             return acc
         project_mw = {}
+        project_seen = {}
         for r in rows:
             mw = _dcp_panel_mw(r, year)
             if not mw:
@@ -2588,8 +2602,8 @@ def server(input: Inputs, output: Outputs, session: Session):
             if category == "aprovado" and r.get("cust_status") != "assinado":
                 continue
             acc[category] += mw
-            _dcp_track_project(project_mw, r, category, mw)
-        _dcp_apply_project_counts(acc, project_mw)
+            _dcp_track_project(project_mw, project_seen, r, category, mw)
+        _dcp_apply_project_counts(acc, project_mw, project_seen)
         return acc
 
     def _dcp_possible_year_series(rows, years):

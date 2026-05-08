@@ -2337,6 +2337,24 @@ def server(input: Inputs, output: Outputs, session: Session):
         original_proto = _dcp_revision_original_proto(r)
         return original_proto or _dcp_proto_key(r.get("main_protocol"))
 
+    def _dcp_request_year(r):
+        text = str(r.get("data_solicitacao") or "").strip()
+        for pattern in (r"(\d{2})/(\d{2})/(\d{4})", r"(\d{4})-(\d{2})-(\d{2})"):
+            match = re.search(pattern, text)
+            if match:
+                return int(match.group(3) if pattern.startswith(r"(\d{2})") else match.group(1))
+        proto_match = re.search(r"/(\d{4})", str(r.get("main_protocol") or ""))
+        return int(proto_match.group(1)) if proto_match else None
+
+    def _dcp_project_arrived(r, year):
+        request_year = _dcp_request_year(r)
+        if request_year is None:
+            return True
+        try:
+            return request_year <= int(year)
+        except Exception:
+            return True
+
     def _dcp_raw_value_source_year(r, year):
         if year is None:
             return None
@@ -2528,7 +2546,8 @@ def server(input: Inputs, output: Outputs, session: Session):
         for r in rows:
             category = _dcp_viab_category(_dcp_year_viab(r, year))
             mw = _dcp_panel_mw(r, year)
-            _dcp_track_project(project_mw, project_seen, r, category, mw)
+            if _dcp_project_arrived(r, year):
+                _dcp_track_project(project_mw, project_seen, r, category, mw)
             if not mw:
                 continue
             acc[category] += mw
@@ -2563,7 +2582,8 @@ def server(input: Inputs, output: Outputs, session: Session):
         for r in rows:
             category = _dcp_viab_category(_dcp_raw_year_viab(r, year))
             mw = _dcp_raw_panel_mw(r, year)
-            _dcp_track_project(project_mw, project_seen, r, category, mw)
+            if _dcp_project_arrived(r, year):
+                _dcp_track_project(project_mw, project_seen, r, category, mw)
             if not mw:
                 continue
             acc[category] += mw

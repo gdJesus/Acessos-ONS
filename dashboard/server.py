@@ -2459,7 +2459,7 @@ def server(input: Inputs, output: Outputs, session: Session):
         labels = {"aprovado": "Aprovado", "inviavel": "Inviável", "analise": "Em análise"}
 
         elems = []
-        floating_labels = []
+        bar_labels = []
         for i in range(5):
             y = top + plot_h - (plot_h * i / 4)
             val = max_total * i / 4
@@ -2482,10 +2482,10 @@ def server(input: Inputs, output: Outputs, session: Session):
                     continue
                 y_base -= h
                 elems.append(_svg_tag("rect", x=x - bar_w / 2, y=y_base, width=bar_w, height=max(h, 1), fill=colors[key], rx=2))
-                if h > 18:
-                    elems.append(_svg_tag("text", fmt_value(val), x=x, y=y_base + h / 2 + 4, class_="dcp-chart-bar-label", **{"text-anchor": "middle"}))
-                elif key == "inviavel" and val > 0:
-                    floating_labels.append(_svg_tag("text", fmt_value(val), x=x, y=max(12, y_base - 5), class_="dcp-chart-small-label red", **{"text-anchor": "middle"}))
+                if key == "inviavel":
+                    bar_labels.append(_svg_tag("text", fmt_value(val), x=x, y=y_base + h / 2, class_="dcp-chart-bar-label dcp-chart-bar-label-inviavel", **{"text-anchor": "middle", "dominant-baseline": "middle"}))
+                elif h > 18:
+                    bar_labels.append(_svg_tag("text", fmt_value(val), x=x, y=y_base + h / 2 + 4, class_="dcp-chart-bar-label", **{"text-anchor": "middle"}))
             elems.append(_svg_tag("text", str(item["year"]), x=x, y=top + plot_h + 24, class_="dcp-chart-axis", **{"text-anchor": "middle"}))
             if total:
                 elems.append(_svg_tag("text", fmt_value(total), x=x, y=max(12, line_y - 8), class_="dcp-chart-total", **{"text-anchor": "middle"}))
@@ -2495,7 +2495,7 @@ def server(input: Inputs, output: Outputs, session: Session):
             for point in line_points:
                 x, y = point.split(",")
                 elems.append(_svg_tag("circle", cx=x, cy=y, r=3.5, fill="#111827"))
-        elems.extend(floating_labels)
+        elems.extend(bar_labels)
 
         legend_items = []
         legend_keys = keys + (["total"] if include_line else [])

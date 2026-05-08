@@ -647,31 +647,31 @@ html, body {
 .dcp-title-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
 .dcp-kpi-row {
   display: grid;
-  grid-template-columns: repeat(6, minmax(148px, 1fr));
-  gap: 16px;
-  margin-bottom: 18px;
+  grid-template-columns: repeat(6, minmax(160px, 1fr));
+  gap: 18px;
+  margin-bottom: 20px;
 }
 .dcp-kpi-card {
   display: flex;
-  gap: 14px;
+  gap: 16px;
   align-items: center;
   background: var(--white);
   border: 1px solid var(--border-light);
   border-radius: 8px;
-  padding: 18px 18px;
+  padding: 22px 20px;
   box-shadow: var(--shadow);
-  min-height: 100px;
+  min-height: 122px;
 }
 .dcp-card-icon {
-  width: 46px;
-  height: 46px;
-  border-radius: 10px;
+  width: 56px;
+  height: 56px;
+  border-radius: 12px;
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
   font-weight: 900;
-  font-size: 21px;
+  font-size: 25px;
 }
 .dcp-card-icon.neutral { background: #EAF3E3; color: var(--green-dark); }
 .dcp-card-icon.cyan { background: #CFFAFE; color: #0891B2; }
@@ -681,25 +681,26 @@ html, body {
 .dcp-card-icon.purple { background: #EDE9FE; color: #7C3AED; }
 .dcp-card-copy { min-width: 0; }
 .dcp-card-title {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-muted);
   font-weight: 700;
   line-height: 1.1;
 }
 .dcp-card-value {
   font-family: 'JetBrains Mono', monospace;
-  font-size: 27px;
+  font-size: 34px;
   line-height: 1.05;
   font-weight: 800;
   color: var(--text);
   margin-top: 4px;
 }
-.dcp-card-sub { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
+.dcp-card-sub { font-size: 13px; color: var(--text-muted); margin-top: 5px; }
 .dcp-main-grid {
   display: grid;
-  grid-template-columns: 320px minmax(0, 1fr) 360px;
-  gap: 16px;
+  grid-template-columns: 350px minmax(0, 1fr) 390px;
+  gap: 18px;
   align-items: stretch;
+  min-height: calc(100vh - 300px);
 }
 .dcp-panel {
   background: var(--white);
@@ -760,7 +761,7 @@ html, body {
   cursor: pointer;
 }
 .dcp-toggle.active { background: var(--white); color: var(--text); box-shadow: var(--shadow); }
-.dcp-chart-svg { width: 100%; height: 210px; display: block; flex: 1; min-height: 180px; }
+.dcp-chart-svg { width: 100%; height: 100%; display: block; flex: 1; min-height: 330px; }
 .dcp-chart-grid { stroke: #E5E7EB; stroke-dasharray: 3 4; }
 .dcp-chart-axis-line { stroke: #D1D5DB; }
 .dcp-chart-axis {
@@ -773,6 +774,10 @@ html, body {
   font-size: 10px;
   font-weight: 800;
   fill: #FFFFFF;
+}
+.dcp-chart-bar-label-inviavel {
+  fill: #FFFFFF;
+  font-weight: 900;
 }
 .dcp-chart-total {
   font-family: 'JetBrains Mono', monospace;
@@ -806,14 +811,15 @@ html, body {
   background: #F8FAFC;
   border-radius: 8px;
   padding: 12px;
-  min-height: 285px;
+  min-height: 360px;
+  flex: 1;
   display: flex;
   align-items: center;
   justify-content: center;
 }
 .dcp-brazil-map svg {
   width: 100%;
-  max-height: 300px;
+  max-height: 380px;
   height: auto;
 }
 .dcp-brazil-map .state[id] {

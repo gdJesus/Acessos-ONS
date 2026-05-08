@@ -650,7 +650,7 @@ def _write_bd_entrada_excel(path, rows_data, viabilidades_existentes):
     wb.remove(wb.active)
 
     ws_pontos = wb.create_sheet("Pontos")
-    headers_pontos = ["Protocolo", "Ponto", "Empreendimento", "Rede", "Tensão (kV)", "Viabilidade Geral"]
+    headers_pontos = ["Protocolo", "Ponto", "Empreendimento", "Rede", "Tensão (kV)", "Viabilidade Geral", "Relação Protocolo Revisado"]
     ws_pontos.append(headers_pontos)
     for col_idx, h in enumerate(headers_pontos, start=1):
         c = ws_pontos.cell(row=1, column=col_idx)
@@ -667,6 +667,7 @@ def _write_bd_entrada_excel(path, rows_data, viabilidades_existentes):
             r.get("rede", ""),
             r.get("tensao", ""),
             entry.get("viabilidade_geral", ""),
+            entry.get("relacao_protocolo_revisado", ""),
         ])
 
     last_row = ws_pontos.max_row
@@ -681,7 +682,7 @@ def _write_bd_entrada_excel(path, rows_data, viabilidades_existentes):
         dv_rede.add(f"D2:D{last_row}")
 
     widths_pontos = {"Protocolo": 22, "Ponto": 35, "Empreendimento": 32, "Rede": 8,
-                     "Tensão (kV)": 12, "Viabilidade Geral": 24}
+                     "Tensão (kV)": 12, "Viabilidade Geral": 24, "Relação Protocolo Revisado": 28}
     for col_idx, h in enumerate(headers_pontos, start=1):
         ws_pontos.column_dimensions[get_column_letter(col_idx)].width = widths_pontos.get(h, 14)
     ws_pontos.freeze_panes = "C2"
@@ -737,6 +738,7 @@ def _write_bd_entrada_excel(path, rows_data, viabilidades_existentes):
         ["BD Entrada — Estrutura"], [""],
         ["📌 Para CADASTRAR novo ponto, edite APENAS a aba 'Pontos'."],
         ["📌 Para SAM com vários pontos, repita o protocolo e varie 'Ponto'."],
+        ["📌 Para RPA de revisão, preencha 'Relação Protocolo Revisado' com o SPA original."],
         ["📌 Nas abas de detalhe, edite apenas as colunas Y2024, Y2025, ..."],
         [""],
         ["Valores aceitos para Viabilidade:"],
@@ -2218,6 +2220,15 @@ def server(input: Inputs, output: Outputs, session: Session):
         fora = _dcp_num(vals.get("fora"))
         return max(ponta, fora)
 
+    def _dcp_proto_key(proto):
+        return str(proto or "").strip().upper()
+
+    _dcp_rows_by_proto = {}
+    for _row in DATACENTER_ROWS:
+        _key = _dcp_proto_key(_row.get("main_protocol"))
+        if _key:
+            _dcp_rows_by_proto.setdefault(_key, _row)
+
     def _dcp_requested_year_mw(r, year):
         vals = _year_dict_get(r.get("year_values") or {}, year)
         return _dcp_values_mw(vals)
@@ -2267,12 +2278,48 @@ def server(input: Inputs, output: Outputs, session: Session):
             return 0.0
         return _dcp_requested_year_mw(r, source_year)
 
-    def _dcp_is_panel_row(r):
+    def _dcp_revision_original_proto(r):
+        if _protocol_type(r.get("main_protocol")) != "RPA":
+            return ""
+        return _dcp_proto_key(r.get("relacao_protocolo_revisado"))
+
+    def _dcp_revision_original_row(r):
+        proto = _dcp_revision_original_proto(r)
+        if not proto:
+            return None
+        original = _dcp_rows_by_proto.get(proto)
+        if original is None or _protocol_type(original.get("main_protocol")) != "SPA":
+            return None
+        return original
+
+    def _dcp_is_panel_spa_row(r):
         return (
             r.get("rede") == "RB"
             and _protocol_type(r.get("main_protocol")) == "SPA"
             and _classify_status_card(r.get("status")) != "cancelado"
         )
+
+    def _dcp_is_panel_revision_row(r):
+        return (
+            r.get("rede") == "RB"
+            and _protocol_type(r.get("main_protocol")) == "RPA"
+            and _classify_status_card(r.get("status")) != "cancelado"
+            and _dcp_revision_original_row(r) is not None
+        )
+
+    def _dcp_is_panel_row(r):
+        return _dcp_is_panel_spa_row(r) or _dcp_is_panel_revision_row(r)
+
+    def _dcp_project_key(r):
+        original_proto = _dcp_revision_original_proto(r)
+        return original_proto or _dcp_proto_key(r.get("main_protocol"))
+
+    def _dcp_panel_mw(r, year):
+        mw = _dcp_year_mw(r, year)
+        original = _dcp_revision_original_row(r)
+        if original is None:
+            return mw
+        return max(0.0, mw - _dcp_year_mw(original, year))
 
     def _dcp_horizon_years():
         years = sorted({
@@ -2359,7 +2406,7 @@ def server(input: Inputs, output: Outputs, session: Session):
         if year is None:
             return acc
         for r in rows:
-            mw = _dcp_year_mw(r, year)
+            mw = _dcp_panel_mw(r, year)
             if not mw:
                 continue
             category = _dcp_viab_category(_dcp_year_viab(r, year))
@@ -2392,7 +2439,7 @@ def server(input: Inputs, output: Outputs, session: Session):
         if year is None:
             return acc
         for r in rows:
-            mw = _dcp_year_mw(r, year)
+            mw = _dcp_panel_mw(r, year)
             if not mw:
                 continue
             category = _dcp_viab_category(_dcp_year_viab(r, year))
@@ -2419,24 +2466,26 @@ def server(input: Inputs, output: Outputs, session: Session):
             uf = str(r.get("uf") or "").upper()
             if uf not in UF_MAP:
                 continue
-            totals[uf] = totals.get(uf, 0.0) + _dcp_year_mw(r, year)
+            totals[uf] = totals.get(uf, 0.0) + _dcp_panel_mw(r, year)
         return totals
 
     def _dcp_state_summary(rows, year):
         acc = _dcp_aggregate_year(rows, year)
         total = _dcp_total(acc)
         cust = sum(
-            _dcp_year_mw(r, year)
+            _dcp_panel_mw(r, year)
             for r in rows
             if (
                 year is not None
                 and r.get("cust_status") == "assinado"
-                and _dcp_year_mw(r, year)
+                and _dcp_panel_mw(r, year)
                 and _dcp_viab_category(_dcp_year_viab(r, year)) == "aprovado"
             )
         )
+        project_keys = {_dcp_project_key(r) for r in rows if _dcp_project_key(r)}
         return {
-            "projetos": len(rows),
+            "solicitacoes": len(rows),
+            "projetos": len(project_keys),
             "total": total,
             "aprovado": acc["aprovado"],
             "inviavel": acc["inviavel"],
@@ -2649,7 +2698,7 @@ def server(input: Inputs, output: Outputs, session: Session):
                 class_="dcp-title-row",
             ),
             tags.div(
-                _dcp_card("Projetos", _dcp_fmt(summary["projetos"]), "Total no ano de referência", "neutral", "▦"),
+                _dcp_card("Solicitações/Projetos", f"{_dcp_fmt(summary['solicitacoes'])}/{_dcp_fmt(summary['projetos'])}", "Total no ano de referência", "neutral", "▦"),
                 _dcp_card("MW solicitados", _dcp_fmt_mw(total), "Total no ano de referência", "cyan", "⚡"),
                 _dcp_card("Aprovados", _dcp_fmt_mw(summary["aprovado"]), f"{_dcp_pct(summary['aprovado'], total)} do total", "green", "✓"),
                 _dcp_card("Em análise", _dcp_fmt_mw(summary["analise"]), f"{_dcp_pct(summary['analise'], total)} do total", "blue", "◷"),
@@ -2666,7 +2715,7 @@ def server(input: Inputs, output: Outputs, session: Session):
                         tags.div("Estado selecionado", class_="dcp-selected-label"),
                         tags.div(map_title, class_="dcp-selected-title"),
                         tags.div(
-                            tags.div(tags.span("Projetos"), tags.strong(_dcp_fmt(map_summary["projetos"]))),
+                            tags.div(tags.span("Solic./Proj."), tags.strong(f"{_dcp_fmt(map_summary['solicitacoes'])}/{_dcp_fmt(map_summary['projetos'])}")),
                             tags.div(tags.span("MW solic."), tags.strong(_dcp_fmt_mw(map_summary["total"]))),
                             tags.div(tags.span("Aprovados"), tags.strong(_dcp_fmt_mw(map_summary["aprovado"]))),
                             class_="dcp-selected-stats",

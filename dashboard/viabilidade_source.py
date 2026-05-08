@@ -182,6 +182,7 @@ def load_viabilidades(path="viabilidades.xlsx"):
             "rede": (r.get("Rede") or "").strip().upper(),
             "tensao": (r.get("Tensão (kV)") or r.get("Tensão") or "").strip(),
             "viabilidade_geral": (r.get("Viabilidade Geral") or "").strip(),
+            "relacao_protocolo_revisado": (r.get("Relação Protocolo Revisado") or "").strip(),
             "anos": {},
         }
         out.append(entry)
@@ -246,6 +247,7 @@ def _load_viabilidades_old_multi_aba(path):
             "rede": (r.get("Rede") or "").strip().upper(),
             "tensao": (r.get("Tensão (kV)") or r.get("Tensão") or "").strip(),
             "viabilidade_geral": (r.get("Viabilidade Geral") or "").strip(),
+            "relacao_protocolo_revisado": (r.get("Relação Protocolo Revisado") or "").strip(),
             "anos": {},
         }
         for h, v in r.items():
@@ -306,6 +308,7 @@ def _load_viabilidades_legacy(path):
             "rede": (r.get("Rede") or "").strip().upper(),
             "tensao": (r.get("Tensão (kV)") or r.get("Tensão") or "").strip(),
             "viabilidade_geral": (r.get("Viabilidade Geral") or "").strip(),
+            "relacao_protocolo_revisado": (r.get("Relação Protocolo Revisado") or "").strip(),
             "anos": {},
         }
 

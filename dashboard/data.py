@@ -673,6 +673,7 @@ for idx, entry in enumerate(VIABILIDADES_ENTRIES, start=1):
         "year_status": year_status,
         "potencia_max": potencia_max,
         "fonte_must": fonte_must,
+        "relacao_protocolo_revisado": (entry.get("relacao_protocolo_revisado") or "").strip(),
         "origem": "BD entrada",
         "viabilidade_anos": viabilidade_anos_display,
         "viabilidade_resumo": viabilidade_resumo,

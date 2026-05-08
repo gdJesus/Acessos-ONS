@@ -207,6 +207,11 @@ def _datacenters_panel_filters_section():
             class_="filter-group",
         ),
         tags.div(
+            tags.div("Período sem limite do horizonte:", class_="filter-label"),
+            ui.input_slider("dcp_raw_period", "", min=2024, max=2033, value=(2024, 2033), step=1, sep=""),
+            class_="filter-group",
+        ),
+        tags.div(
             tags.div("Ano de referência:", class_="filter-label"),
             ui.input_select("dcp_year", "", choices={"latest": "Último ano do horizonte"}, selected="latest"),
             class_="filter-group",

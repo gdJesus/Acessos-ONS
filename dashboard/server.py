@@ -1105,6 +1105,7 @@ def server(input: Inputs, output: Outputs, session: Session):
     def _():
         years = _dcp_horizon_years()
         ui.update_selectize("dcp_period_years", selected=[str(y) for y in years])
+        ui.update_slider("dcp_raw_period", value=(2024, 2033))
         ui.update_select("dcp_year", selected="latest")
         dc_panel_state.set("")
 
@@ -1128,7 +1129,7 @@ def server(input: Inputs, output: Outputs, session: Session):
     @reactive.event(input.dcp_chart_type)
     def _toggle_dc_panel_chart_type():
         chart_type = str(input.dcp_chart_type() or "").strip()
-        if chart_type in ("received", "possible"):
+        if chart_type in ("received", "possible", "raw"):
             dc_panel_chart_type.set(chart_type)
 
     @reactive.effect
@@ -1897,6 +1898,7 @@ def server(input: Inputs, output: Outputs, session: Session):
         dcp_year_choices = {"latest": "Último ano do horizonte"}
         dcp_year_choices.update({str(y): str(y) for y in dcp_years})
         ui.update_selectize("dcp_period_years", choices={str(y): str(y) for y in dcp_years}, selected=[str(y) for y in dcp_years])
+        ui.update_slider("dcp_raw_period", value=(2024, 2033))
         ui.update_select("dcp_year", choices=dcp_year_choices, selected="latest")
 
     def _dc_filtered_rows():
@@ -2321,6 +2323,13 @@ def server(input: Inputs, output: Outputs, session: Session):
             return mw
         return max(0.0, mw - _dcp_year_mw(original, year))
 
+    def _dcp_raw_panel_mw(r, year):
+        mw = _dcp_requested_year_mw(r, year)
+        original = _dcp_revision_original_row(r)
+        if original is None:
+            return mw
+        return max(0.0, mw - _dcp_requested_year_mw(original, year))
+
     def _dcp_contract_horizon_years():
         years = sorted({
             y
@@ -2339,12 +2348,7 @@ def server(input: Inputs, output: Outputs, session: Session):
         })
 
     def _dcp_horizon_years():
-        years = _dcp_contract_horizon_years()
-        if not years:
-            return years
-        start = min(years)
-        end = max(max(years), 2032)
-        return list(range(start, end + 1))
+        return _dcp_contract_horizon_years()
 
     def _dcp_period_years():
         available = _dcp_horizon_years()
@@ -2354,6 +2358,21 @@ def server(input: Inputs, output: Outputs, session: Session):
             selected = []
         selected = [y for y in selected if y in available]
         return selected or available
+
+    def _dcp_raw_period_years():
+        try:
+            raw = list(input.dcp_raw_period() or [])
+        except Exception:
+            raw = [2024, 2033]
+        try:
+            start, end = int(raw[0]), int(raw[-1])
+        except Exception:
+            start, end = 2024, 2033
+        start = max(2024, min(2033, start))
+        end = max(2024, min(2033, end))
+        if start > end:
+            start, end = end, start
+        return list(range(start, end + 1))
 
     def _dcp_reference_year():
         years = _dcp_contract_horizon_years()
@@ -2379,6 +2398,17 @@ def server(input: Inputs, output: Outputs, session: Session):
         source_year = _dcp_panel_value_source_year(r, year)
         if source_year is not None:
             year = source_year
+        viab_data = r.get("viabilidade_anos") or {}
+        anos = viab_data.get("anos") or {}
+        vals = _year_dict_get(anos, year)
+        return (
+            str(vals.get("viabilidade") or "").strip()
+            or str(viab_data.get("viabilidade_geral") or "").strip()
+            or str(r.get("viabilidade_resumo") or "").strip()
+            or "Em análise"
+        )
+
+    def _dcp_raw_year_viab(r, year):
         viab_data = r.get("viabilidade_anos") or {}
         anos = viab_data.get("anos") or {}
         vals = _year_dict_get(anos, year)
@@ -2429,6 +2459,36 @@ def server(input: Inputs, output: Outputs, session: Session):
     def _dcp_year_series(rows, years):
         return [
             {"year": y, **_dcp_aggregate_year(rows, y)}
+            for y in years
+        ]
+
+    def _dcp_aggregate_raw_year(rows, year):
+        acc = {
+            "aprovado": 0.0,
+            "inviavel": 0.0,
+            "analise": 0.0,
+            "anulado": 0.0,
+            "projetos": 0,
+            "aprovado_projetos": 0,
+            "inviavel_projetos": 0,
+            "analise_projetos": 0,
+            "anulado_projetos": 0,
+        }
+        if year is None:
+            return acc
+        for r in rows:
+            mw = _dcp_raw_panel_mw(r, year)
+            if not mw:
+                continue
+            category = _dcp_viab_category(_dcp_raw_year_viab(r, year))
+            acc["projetos"] += 1
+            acc[category] += mw
+            acc[f"{category}_projetos"] += 1
+        return acc
+
+    def _dcp_raw_year_series(rows, years):
+        return [
+            {"year": y, **_dcp_aggregate_raw_year(rows, y)}
             for y in years
         ]
 
@@ -2523,10 +2583,11 @@ def server(input: Inputs, output: Outputs, session: Session):
         plot_h = height - top - bottom
         years = [s["year"] for s in series]
         state_label = selected_uf or "RB"
-        chart_type = chart_type if chart_type in ("received", "possible") else "received"
+        chart_type = chart_type if chart_type in ("received", "possible", "raw") else "received"
         title_options = [
             ("received", f"Montante Total de DCs que chegou no ONS — {state_label}"),
             ("possible", f"Evolução do montante total de possíveis DCs em {state_label}"),
+            ("raw", f"Montante Total de DCs que chegou no ONS — {state_label} — Desconsiderando Limitação pelo Horizonte de Contratação"),
         ]
         metric = metric if metric in ("mw", "projects") else "mw"
         fmt_value = _dcp_fmt_mw if metric == "mw" else _dcp_fmt
@@ -2679,6 +2740,7 @@ def server(input: Inputs, output: Outputs, session: Session):
 
         ref_year = _dcp_reference_year()
         period_years = _dcp_period_years()
+        raw_period_years = _dcp_raw_period_years()
         rows = _dcp_base_rows(include_state=True)
         all_rows = _dcp_base_rows(include_state=False)
         summary = _dcp_state_summary(rows, ref_year)
@@ -2689,9 +2751,22 @@ def server(input: Inputs, output: Outputs, session: Session):
         state_totals = _dcp_state_totals(ref_year)
         series = _dcp_year_series(rows, period_years)
         possible_series = _dcp_possible_year_series(rows, period_years)
-        chart_series = possible_series if chart_type == "possible" else series
-        chart_include_inviavel = chart_type != "possible"
-        chart_include_line = chart_type == "possible"
+        raw_series = _dcp_raw_year_series(rows, raw_period_years)
+        if chart_type == "possible":
+            chart_series = possible_series
+            chart_years = period_years
+            chart_include_inviavel = False
+            chart_include_line = True
+        elif chart_type == "raw":
+            chart_series = raw_series
+            chart_years = raw_period_years
+            chart_include_inviavel = True
+            chart_include_line = False
+        else:
+            chart_series = series
+            chart_years = period_years
+            chart_include_inviavel = True
+            chart_include_line = False
         map_rows = [r for r in all_rows if str(r.get("uf") or "").upper() == selected_uf] if selected_uf else all_rows
         map_summary = _dcp_state_summary(map_rows, ref_year)
         map_title = f"{UF_MAP[selected_uf]} ({selected_uf})" if selected_uf else "Todos os estados"
@@ -2700,7 +2775,7 @@ def server(input: Inputs, output: Outputs, session: Session):
             tags.div(
                 tags.div("Painel DataCenters", class_="page-title"),
                 tags.div(
-                    f"Rede RB | SPA | Ano de referência: {ref_year or '—'} | Período: {period_years[0] if period_years else '—'}–{period_years[-1] if period_years else '—'}",
+                    f"Rede RB | SPA | Ano de referência: {ref_year or '—'} | Período: {chart_years[0] if chart_years else '—'}–{chart_years[-1] if chart_years else '—'}",
                     class_="page-subtitle",
                 ),
                 class_="dcp-title-row",

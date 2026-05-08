@@ -2517,10 +2517,10 @@ def server(input: Inputs, output: Outputs, session: Session):
         for r in rows:
             category = _dcp_viab_category(_dcp_year_viab(r, year))
             mw = _dcp_panel_mw(r, year)
-            if not mw:
-                continue
-            acc[category] += mw
-            _dcp_track_project(project_mw, r, category, mw)
+            if mw:
+                acc[category] += mw
+            project_category = _dcp_viab_category(_dcp_raw_year_viab(r, year))
+            _dcp_track_project(project_mw, r, project_category, _dcp_raw_panel_mw(r, year))
         _dcp_apply_project_counts(acc, project_mw)
         return acc
 

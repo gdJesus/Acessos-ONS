@@ -647,31 +647,31 @@ html, body {
 .dcp-title-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
 .dcp-kpi-row {
   display: grid;
-  grid-template-columns: repeat(6, minmax(140px, 1fr));
-  gap: 14px;
-  margin-bottom: 16px;
+  grid-template-columns: repeat(6, minmax(148px, 1fr));
+  gap: 16px;
+  margin-bottom: 18px;
 }
 .dcp-kpi-card {
   display: flex;
-  gap: 12px;
+  gap: 14px;
   align-items: center;
   background: var(--white);
   border: 1px solid var(--border-light);
   border-radius: 8px;
-  padding: 14px 16px;
+  padding: 18px 18px;
   box-shadow: var(--shadow);
-  min-height: 82px;
+  min-height: 100px;
 }
 .dcp-card-icon {
-  width: 38px;
-  height: 38px;
+  width: 46px;
+  height: 46px;
   border-radius: 10px;
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
   font-weight: 900;
-  font-size: 18px;
+  font-size: 21px;
 }
 .dcp-card-icon.neutral { background: #EAF3E3; color: var(--green-dark); }
 .dcp-card-icon.cyan { background: #CFFAFE; color: #0891B2; }
@@ -681,20 +681,20 @@ html, body {
 .dcp-card-icon.purple { background: #EDE9FE; color: #7C3AED; }
 .dcp-card-copy { min-width: 0; }
 .dcp-card-title {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-muted);
   font-weight: 700;
   line-height: 1.1;
 }
 .dcp-card-value {
   font-family: 'JetBrains Mono', monospace;
-  font-size: 22px;
+  font-size: 27px;
   line-height: 1.05;
   font-weight: 800;
   color: var(--text);
-  margin-top: 2px;
+  margin-top: 4px;
 }
-.dcp-card-sub { font-size: 11px; color: var(--text-muted); margin-top: 3px; }
+.dcp-card-sub { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
 .dcp-main-grid {
   display: grid;
   grid-template-columns: 320px minmax(0, 1fr) 360px;

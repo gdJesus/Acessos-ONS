@@ -2321,7 +2321,7 @@ def server(input: Inputs, output: Outputs, session: Session):
             return mw
         return max(0.0, mw - _dcp_year_mw(original, year))
 
-    def _dcp_horizon_years():
+    def _dcp_contract_horizon_years():
         years = sorted({
             y
             for r in DATACENTER_ROWS
@@ -2338,6 +2338,14 @@ def server(input: Inputs, output: Outputs, session: Session):
             if _dcp_num(vals.get("ponta")) or _dcp_num(vals.get("fora"))
         })
 
+    def _dcp_horizon_years():
+        years = _dcp_contract_horizon_years()
+        if not years:
+            return years
+        start = min(years)
+        end = max(max(years), 2032)
+        return list(range(start, end + 1))
+
     def _dcp_period_years():
         available = _dcp_horizon_years()
         try:
@@ -2348,7 +2356,7 @@ def server(input: Inputs, output: Outputs, session: Session):
         return selected or available
 
     def _dcp_reference_year():
-        years = _dcp_horizon_years()
+        years = _dcp_contract_horizon_years()
         try:
             selected = input.dcp_year() or "latest"
         except Exception:

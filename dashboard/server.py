@@ -2476,6 +2476,28 @@ def server(input: Inputs, output: Outputs, session: Session):
             return "aprovado"
         return "analise"
 
+    def _dcp_track_project(project_mw, r, category, mw):
+        key = _dcp_project_key(r)
+        if not key:
+            return
+        buckets = project_mw.setdefault(key, {"aprovado": 0.0, "inviavel": 0.0, "analise": 0.0, "anulado": 0.0})
+        buckets[category] = buckets.get(category, 0.0) + _dcp_num(mw)
+
+    def _dcp_apply_project_counts(acc, project_mw):
+        priority = {"aprovado": 1, "analise": 2, "inviavel": 3, "anulado": 0}
+        acc["projetos"] = 0
+        for key in ("aprovado", "inviavel", "analise", "anulado"):
+            acc[f"{key}_projetos"] = 0
+        for buckets in project_mw.values():
+            category = max(
+                ("aprovado", "inviavel", "analise", "anulado"),
+                key=lambda k: (buckets.get(k, 0.0), priority.get(k, 0)),
+            )
+            if buckets.get(category, 0.0) <= 0:
+                continue
+            acc["projetos"] += 1
+            acc[f"{category}_projetos"] += 1
+
     def _dcp_aggregate_year(rows, year):
         acc = {
             "aprovado": 0.0,
@@ -2490,14 +2512,15 @@ def server(input: Inputs, output: Outputs, session: Session):
         }
         if year is None:
             return acc
+        project_mw = {}
         for r in rows:
             mw = _dcp_panel_mw(r, year)
             if not mw:
                 continue
             category = _dcp_viab_category(_dcp_year_viab(r, year))
-            acc["projetos"] += 1
             acc[category] += mw
-            acc[f"{category}_projetos"] += 1
+            _dcp_track_project(project_mw, r, category, mw)
+        _dcp_apply_project_counts(acc, project_mw)
         return acc
 
     def _dcp_total(acc):
@@ -2523,14 +2546,15 @@ def server(input: Inputs, output: Outputs, session: Session):
         }
         if year is None:
             return acc
+        project_mw = {}
         for r in rows:
             mw = _dcp_raw_panel_mw(r, year)
             if not mw:
                 continue
             category = _dcp_viab_category(_dcp_raw_year_viab(r, year))
-            acc["projetos"] += 1
             acc[category] += mw
-            acc[f"{category}_projetos"] += 1
+            _dcp_track_project(project_mw, r, category, mw)
+        _dcp_apply_project_counts(acc, project_mw)
         return acc
 
     def _dcp_raw_year_series(rows, years):
@@ -2553,6 +2577,7 @@ def server(input: Inputs, output: Outputs, session: Session):
         }
         if year is None:
             return acc
+        project_mw = {}
         for r in rows:
             mw = _dcp_panel_mw(r, year)
             if not mw:
@@ -2562,9 +2587,9 @@ def server(input: Inputs, output: Outputs, session: Session):
                 continue
             if category == "aprovado" and r.get("cust_status") != "assinado":
                 continue
-            acc["projetos"] += 1
             acc[category] += mw
-            acc[f"{category}_projetos"] += 1
+            _dcp_track_project(project_mw, r, category, mw)
+        _dcp_apply_project_counts(acc, project_mw)
         return acc
 
     def _dcp_possible_year_series(rows, years):

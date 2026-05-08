@@ -2218,29 +2218,54 @@ def server(input: Inputs, output: Outputs, session: Session):
         fora = _dcp_num(vals.get("fora"))
         return max(ponta, fora)
 
-    def _dcp_effective_value_year(r, year):
+    def _dcp_requested_year_mw(r, year):
+        vals = _year_dict_get(r.get("year_values") or {}, year)
+        return _dcp_values_mw(vals)
+
+    def _dcp_contract_window_years(r):
+        text = str(r.get("janela_contratavel") or "")
+        match = re.search(r"(\d{4})\D+(\d{4})", text)
+        if match:
+            start, end = int(match.group(1)), int(match.group(2))
+            if start <= end:
+                return list(range(start, end + 1))
+        years = []
+        for raw_year, status in (r.get("year_status") or {}).items():
+            if status not in ("current", "contractable"):
+                continue
+            try:
+                years.append(int(raw_year))
+            except Exception:
+                continue
+        return sorted(set(years))
+
+    def _dcp_panel_value_source_year(r, year):
         if year is None:
             return None
         try:
             year_int = int(year)
         except Exception:
             return None
-        candidates = []
-        for raw_year, vals in (r.get("year_values") or {}).items():
-            try:
-                y = int(raw_year)
-            except Exception:
-                continue
-            if y <= year_int and _dcp_values_mw(vals or {}):
-                candidates.append(y)
-        return max(candidates) if candidates else None
+        window_years = _dcp_contract_window_years(r)
+        if not window_years:
+            return year_int if _dcp_requested_year_mw(r, year_int) else None
+        if year_int <= max(window_years):
+            return year_int if _dcp_requested_year_mw(r, year_int) else None
+
+        best_year = None
+        best_mw = 0.0
+        for y in window_years:
+            mw = _dcp_requested_year_mw(r, y)
+            if mw >= best_mw:
+                best_year = y
+                best_mw = mw
+        return best_year if best_mw else None
 
     def _dcp_year_mw(r, year):
-        effective_year = _dcp_effective_value_year(r, year)
-        if effective_year is None:
+        source_year = _dcp_panel_value_source_year(r, year)
+        if source_year is None:
             return 0.0
-        vals = _year_dict_get(r.get("year_values") or {}, effective_year)
-        return _dcp_values_mw(vals)
+        return _dcp_requested_year_mw(r, source_year)
 
     def _dcp_is_panel_row(r):
         return (
@@ -2251,11 +2276,10 @@ def server(input: Inputs, output: Outputs, session: Session):
 
     def _dcp_horizon_years():
         years = sorted({
-            int(y)
+            y
             for r in DATACENTER_ROWS
             if _dcp_is_panel_row(r)
-            for y, st in (r.get("year_status") or {}).items()
-            if st in ("current", "contractable")
+            for y in _dcp_contract_window_years(r)
         })
         if years:
             return years
@@ -2297,9 +2321,9 @@ def server(input: Inputs, output: Outputs, session: Session):
         return rows
 
     def _dcp_year_viab(r, year):
-        effective_year = _dcp_effective_value_year(r, year)
-        if effective_year is not None:
-            year = effective_year
+        source_year = _dcp_panel_value_source_year(r, year)
+        if source_year is not None:
+            year = source_year
         viab_data = r.get("viabilidade_anos") or {}
         anos = viab_data.get("anos") or {}
         vals = _year_dict_get(anos, year)

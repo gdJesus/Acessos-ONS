@@ -2235,6 +2235,17 @@ def server(input: Inputs, output: Outputs, session: Session):
         vals = _year_dict_get(r.get("year_values") or {}, year)
         return _dcp_values_mw(vals)
 
+    def _dcp_requested_mw_years(r):
+        years = []
+        for raw_year, vals in (r.get("year_values") or {}).items():
+            if not _dcp_values_mw(vals):
+                continue
+            try:
+                years.append(int(raw_year))
+            except Exception:
+                continue
+        return sorted(set(years))
+
     def _dcp_contract_window_years(r):
         text = str(r.get("janela_contratavel") or "")
         match = re.search(r"(\d{4})\D+(\d{4})", text)
@@ -2312,9 +2323,42 @@ def server(input: Inputs, output: Outputs, session: Session):
     def _dcp_is_panel_row(r):
         return _dcp_is_panel_spa_row(r) or _dcp_is_panel_revision_row(r)
 
+    _dcp_raw_max_year = max(
+        (
+            y
+            for _row in DATACENTER_ROWS
+            if _dcp_is_panel_row(_row)
+            for y in _dcp_requested_mw_years(_row)
+        ),
+        default=None,
+    )
+
     def _dcp_project_key(r):
         original_proto = _dcp_revision_original_proto(r)
         return original_proto or _dcp_proto_key(r.get("main_protocol"))
+
+    def _dcp_raw_value_source_year(r, year):
+        if year is None:
+            return None
+        try:
+            year_int = int(year)
+        except Exception:
+            return None
+        requested_years = _dcp_requested_mw_years(r)
+        if not requested_years:
+            return None
+        if year_int in requested_years:
+            return year_int
+        last_year = requested_years[-1]
+        if year_int > last_year and (_dcp_raw_max_year is None or year_int <= _dcp_raw_max_year):
+            return last_year
+        return None
+
+    def _dcp_raw_year_mw(r, year):
+        source_year = _dcp_raw_value_source_year(r, year)
+        if source_year is None:
+            return 0.0
+        return _dcp_requested_year_mw(r, source_year)
 
     def _dcp_panel_mw(r, year):
         mw = _dcp_year_mw(r, year)
@@ -2324,11 +2368,11 @@ def server(input: Inputs, output: Outputs, session: Session):
         return max(0.0, mw - _dcp_year_mw(original, year))
 
     def _dcp_raw_panel_mw(r, year):
-        mw = _dcp_requested_year_mw(r, year)
+        mw = _dcp_raw_year_mw(r, year)
         original = _dcp_revision_original_row(r)
         if original is None:
             return mw
-        return max(0.0, mw - _dcp_requested_year_mw(original, year))
+        return max(0.0, mw - _dcp_raw_year_mw(original, year))
 
     def _dcp_contract_horizon_years():
         years = sorted({
@@ -2409,6 +2453,9 @@ def server(input: Inputs, output: Outputs, session: Session):
         )
 
     def _dcp_raw_year_viab(r, year):
+        source_year = _dcp_raw_value_source_year(r, year)
+        if source_year is not None:
+            year = source_year
         viab_data = r.get("viabilidade_anos") or {}
         anos = viab_data.get("anos") or {}
         vals = _year_dict_get(anos, year)

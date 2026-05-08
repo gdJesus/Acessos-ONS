@@ -2431,7 +2431,7 @@ def server(input: Inputs, output: Outputs, session: Session):
             if year is not None and r.get("cust_status") == "assinado" and _dcp_year_mw(r, year)
         )
         return {
-            "projetos": acc["projetos"],
+            "projetos": len(rows),
             "total": total,
             "aprovado": acc["aprovado"],
             "inviavel": acc["inviavel"],

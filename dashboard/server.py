@@ -1895,8 +1895,9 @@ def server(input: Inputs, output: Outputs, session: Session):
             ui.update_selectize(f"{prefix}_status", choices=status_choices, selected=[])
             ui.update_select(f"{prefix}_sort", selected="data_asc")
         dcp_years = _dcp_horizon_years()
+        dcp_reference_years = list(range(min(dcp_years) if dcp_years else 2024, 2034))
         dcp_year_choices = {"latest": "Último ano do horizonte"}
-        dcp_year_choices.update({str(y): str(y) for y in dcp_years})
+        dcp_year_choices.update({str(y): str(y) for y in dcp_reference_years})
         ui.update_selectize("dcp_period_years", choices={str(y): str(y) for y in dcp_years}, selected=[str(y) for y in dcp_years])
         ui.update_slider("dcp_raw_period", value=(2024, 2033))
         ui.update_select("dcp_year", choices=dcp_year_choices, selected="latest")
@@ -2533,10 +2534,10 @@ def server(input: Inputs, output: Outputs, session: Session):
             for y in years
         ]
 
-    def _dcp_power_band_series(rows, years):
+    def _dcp_power_band_series(rows, year):
         values = []
         for r in rows:
-            mw = max((_dcp_panel_mw(r, y) for y in years), default=0.0)
+            mw = _dcp_panel_mw(r, year)
             if mw > 0:
                 values.append(mw)
         if not values:
@@ -2814,7 +2815,7 @@ def server(input: Inputs, output: Outputs, session: Session):
         return tags.div(
             _dcp_chart_header(selected_uf, chart_type),
             tags.svg(*elems, viewBox=f"0 0 {width} {height}", class_="dcp-chart-svg", role="img"),
-            tags.div("Quantidade de solicitações por faixa de potência calculada no período selecionado.", class_="dcp-muted dcp-band-note"),
+            tags.div("Quantidade de solicitações por faixa de potência no ano de referência.", class_="dcp-muted dcp-band-note"),
             class_="dcp-panel dcp-chart-panel",
         )
 
@@ -2894,7 +2895,7 @@ def server(input: Inputs, output: Outputs, session: Session):
         series = _dcp_year_series(rows, period_years)
         possible_series = _dcp_possible_year_series(rows, period_years)
         raw_series = _dcp_raw_year_series(rows, raw_period_years)
-        power_band_series = _dcp_power_band_series(rows, period_years)
+        power_band_series = _dcp_power_band_series(rows, ref_year)
         if chart_type == "possible":
             chart_series = possible_series
             chart_years = period_years
@@ -2907,7 +2908,7 @@ def server(input: Inputs, output: Outputs, session: Session):
             chart_include_line = False
         elif chart_type == "power_band":
             chart_series = series
-            chart_years = period_years
+            chart_years = [ref_year] if ref_year else []
             chart_include_inviavel = True
             chart_include_line = False
         else:

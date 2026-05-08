@@ -685,6 +685,24 @@ html, body {
   color: var(--text-muted);
   font-weight: 700;
   line-height: 1.1;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.dcp-info-dot {
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: #EFF6FF;
+  border: 1px solid #BFDBFE;
+  color: #1D4ED8;
+  font-size: 10px;
+  font-weight: 900;
+  cursor: help;
+  flex-shrink: 0;
 }
 .dcp-card-value {
   font-family: 'JetBrains Mono', monospace;

@@ -2469,7 +2469,7 @@ def server(input: Inputs, output: Outputs, session: Session):
     def _dcp_viab_category(viab):
         text = str(viab or "").strip().lower()
         if "anul" in text:
-            return "anulado"
+            return "aprovado"
         if "invi" in text or "não vi" in text or "nao vi" in text or "negad" in text or "cancel" in text:
             return "inviavel"
         if "viável" in text or "viavel" in text or "condicionado" in text or "limitado" in text:
@@ -2611,11 +2611,14 @@ def server(input: Inputs, output: Outputs, session: Session):
     def _dcp_pct(value, total):
         return "0%" if not total else f"{round(100 * value / total):.0f}%"
 
-    def _dcp_card(title, value, sub, tone, icon):
+    def _dcp_card(title, value, sub, tone, icon, info=None):
+        title_children = [tags.span(title)]
+        if info:
+            title_children.append(tags.span("i", class_="dcp-info-dot", title=info, **{"aria-label": info}))
         return tags.div(
             tags.div(icon, class_=f"dcp-card-icon {tone}"),
             tags.div(
-                tags.div(title, class_="dcp-card-title"),
+                tags.div(*title_children, class_="dcp-card-title"),
                 tags.div(value, class_="dcp-card-value"),
                 tags.div(sub, class_="dcp-card-sub"),
                 class_="dcp-card-copy",
@@ -2647,7 +2650,7 @@ def server(input: Inputs, output: Outputs, session: Session):
             if value == chart_type:
                 attrs["selected"] = "selected"
             return tags.option(label, **attrs)
-        keys = ["aprovado", "inviavel", "analise", "anulado"] if include_inviavel else ["aprovado", "analise"]
+        keys = ["aprovado", "inviavel", "analise"] if include_inviavel else ["aprovado", "analise"]
         totals = [sum(chart_value(s, key) for key in keys) for s in series]
         max_total = max(totals) if totals else 0
         max_total = max_total or 1
@@ -2679,10 +2682,14 @@ def server(input: Inputs, output: Outputs, session: Session):
                     continue
                 y_base -= h
                 elems.append(_svg_tag("rect", x=x - bar_w / 2, y=y_base, width=bar_w, height=max(h, 1), fill=colors[key], rx=2))
-                if key == "inviavel":
-                    bar_labels.append(_svg_tag("text", fmt_value(val), x=x, y=y_base + h / 2, class_="dcp-chart-bar-label dcp-chart-bar-label-inviavel", **{"text-anchor": "middle", "dominant-baseline": "middle"}))
-                elif h > 18:
-                    bar_labels.append(_svg_tag("text", fmt_value(val), x=x, y=y_base + h / 2 + 4, class_="dcp-chart-bar-label", **{"text-anchor": "middle"}))
+                bar_labels.append(_svg_tag(
+                    "text",
+                    fmt_value(val),
+                    x=x,
+                    y=y_base + h / 2,
+                    class_=f"dcp-chart-bar-label dcp-chart-bar-label-{key}",
+                    **{"text-anchor": "middle", "dominant-baseline": "middle"},
+                ))
             elems.append(_svg_tag("text", str(item["year"]), x=x, y=top + plot_h + 24, class_="dcp-chart-axis", **{"text-anchor": "middle"}))
             if total:
                 elems.append(_svg_tag("text", fmt_value(total), x=x, y=max(12, line_y - 8), class_="dcp-chart-total", **{"text-anchor": "middle"}))
@@ -2828,7 +2835,14 @@ def server(input: Inputs, output: Outputs, session: Session):
                 class_="dcp-title-row",
             ),
             tags.div(
-                _dcp_card("Solicitações/Projetos", f"{_dcp_fmt(summary['solicitacoes'])}/{_dcp_fmt(summary['projetos'])}", "Total no ano de referência", "neutral", "▦"),
+                _dcp_card(
+                    "Solicitações/Projetos",
+                    f"{_dcp_fmt(summary['solicitacoes'])}/{_dcp_fmt(summary['projetos'])}",
+                    "Total no ano de referência",
+                    "neutral",
+                    "▦",
+                    "Solicitações considera as SGA-RPAs; o número de projetos considera apenas as SGA-SPAs.",
+                ),
                 _dcp_card("MW solicitados", _dcp_fmt_mw(total), "Total no ano de referência", "cyan", "⚡"),
                 _dcp_card("Aprovados", _dcp_fmt_mw(summary["aprovado"]), f"{_dcp_pct(summary['aprovado'], total)} do total", "green", "✓"),
                 _dcp_card("Em análise", _dcp_fmt_mw(summary["analise"]), f"{_dcp_pct(summary['analise'], total)} do total", "blue", "◷"),

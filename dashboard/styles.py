@@ -803,6 +803,21 @@ html, body {
   font-weight: 800;
   fill: #111827;
 }
+.dcp-band-value {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 13px;
+  font-weight: 900;
+  fill: #777777;
+}
+.dcp-band-axis {
+  font-size: 11px;
+  font-weight: 800;
+  fill: #777777;
+}
+.dcp-band-note {
+  text-align: center;
+  margin-top: 4px;
+}
 .dcp-chart-small-label {
   font-family: 'JetBrains Mono', monospace;
   font-size: 10px;

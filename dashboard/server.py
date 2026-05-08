@@ -1129,7 +1129,7 @@ def server(input: Inputs, output: Outputs, session: Session):
     @reactive.event(input.dcp_chart_type)
     def _toggle_dc_panel_chart_type():
         chart_type = str(input.dcp_chart_type() or "").strip()
-        if chart_type in ("received", "possible", "raw"):
+        if chart_type in ("received", "possible", "raw", "power_band"):
             dc_panel_chart_type.set(chart_type)
 
     @reactive.effect
@@ -2533,6 +2533,29 @@ def server(input: Inputs, output: Outputs, session: Session):
             for y in years
         ]
 
+    def _dcp_power_band_series(rows, years):
+        values = []
+        for r in rows:
+            mw = max((_dcp_panel_mw(r, y) for y in years), default=0.0)
+            if mw > 0:
+                values.append(mw)
+        if not values:
+            return []
+        max_upper = int(((max(values) - 1e-9) // 50 + 1) * 50)
+        bands = [
+            {"lower": lower, "upper": lower + 50, "count": 0}
+            for lower in range(0, max_upper, 50)
+        ]
+        for mw in values:
+            upper = int(((mw - 1e-9) // 50 + 1) * 50)
+            idx = max(0, (upper // 50) - 1)
+            if idx < len(bands):
+                bands[idx]["count"] += 1
+        for band in bands:
+            lower, upper = band["lower"], band["upper"]
+            band["label"] = f"[{lower}, {upper}]" if lower == 0 else f"({lower}, {upper}]"
+        return bands
+
     def _dcp_aggregate_raw_year(rows, year):
         acc = {
             "aprovado": 0.0,
@@ -2652,30 +2675,52 @@ def server(input: Inputs, output: Outputs, session: Session):
             class_="dcp-kpi-card",
         )
 
+    def _dcp_chart_title_options(selected_uf):
+        state_label = selected_uf or "RB"
+        return [
+            ("received", f"Montante Total de DCs que chegou no ONS — {state_label}"),
+            ("possible", f"Evolução do montante total de possíveis DCs em {state_label}"),
+            ("raw", f"Montante Total de DCs que chegou no ONS — {state_label} — Desconsiderando Limitação pelo Horizonte de Contratação"),
+            ("power_band", "Distribuição das Solicitações por Faixa de Potência [MW] - Apenas RB"),
+        ]
+
+    def _dcp_chart_option(value, label, chart_type):
+        attrs = {"value": value}
+        if value == chart_type:
+            attrs["selected"] = "selected"
+        return tags.option(label, **attrs)
+
+    def _dcp_chart_header(selected_uf, chart_type, metric=None):
+        return tags.div(
+            tags.div(
+                tags.select(
+                    *(_dcp_chart_option(value, label, chart_type) for value, label in _dcp_chart_title_options(selected_uf)),
+                    class_="dcp-chart-select",
+                    **{"aria-label": "Tipo de gráfico"},
+                ),
+                class_="dcp-panel-title dcp-panel-title-control",
+            ),
+            tags.div(
+                tags.button("Exibir: MW", class_=f"dcp-toggle {'active' if metric == 'mw' else ''}", **{"data-metric": "mw", "type": "button"}),
+                tags.button("Projetos", class_=f"dcp-toggle {'active' if metric == 'projects' else ''}", **{"data-metric": "projects", "type": "button"}),
+                class_="dcp-chart-toggle",
+            ) if metric else None,
+            class_="dcp-panel-head",
+        )
+
     def _dcp_chart(series, selected_uf, chart_type="received", metric="mw", include_inviavel=True, include_line=False):
         width, height = 760, 260
         left, right, top, bottom = 54, 20, 24, 42
         plot_w = width - left - right
         plot_h = height - top - bottom
         years = [s["year"] for s in series]
-        state_label = selected_uf or "RB"
-        chart_type = chart_type if chart_type in ("received", "possible", "raw") else "received"
-        title_options = [
-            ("received", f"Montante Total de DCs que chegou no ONS — {state_label}"),
-            ("possible", f"Evolução do montante total de possíveis DCs em {state_label}"),
-            ("raw", f"Montante Total de DCs que chegou no ONS — {state_label} — Desconsiderando Limitação pelo Horizonte de Contratação"),
-        ]
+        chart_type = chart_type if chart_type in ("received", "possible", "raw", "power_band") else "received"
         metric = metric if metric in ("mw", "projects") else "mw"
         fmt_value = _dcp_fmt_mw if metric == "mw" else _dcp_fmt
         def chart_value(item, key):
             if metric == "projects":
                 return item.get(f"{key}_projetos", 0)
             return item.get(key, 0.0)
-        def chart_option(value, label):
-            attrs = {"value": value}
-            if value == chart_type:
-                attrs["selected"] = "selected"
-            return tags.option(label, **attrs)
         keys = ["aprovado", "inviavel", "analise"] if include_inviavel else ["aprovado", "analise"]
         totals = [sum(chart_value(s, key) for key in keys) for s in series]
         max_total = max(totals) if totals else 0
@@ -2735,24 +2780,41 @@ def server(input: Inputs, output: Outputs, session: Session):
             legend_items.append(tags.span(tags.span(style=f"background:{legend_colors[key]};", class_="dcp-legend-swatch"), legend_labels[key], class_="dcp-legend-item"))
 
         return tags.div(
-            tags.div(
-                tags.div(
-                    tags.select(
-                        *(chart_option(value, label) for value, label in title_options),
-                        class_="dcp-chart-select",
-                        **{"aria-label": "Tipo de gráfico"},
-                    ),
-                    class_="dcp-panel-title dcp-panel-title-control",
-                ),
-                tags.div(
-                    tags.button("Exibir: MW", class_=f"dcp-toggle {'active' if metric == 'mw' else ''}", **{"data-metric": "mw", "type": "button"}),
-                    tags.button("Projetos", class_=f"dcp-toggle {'active' if metric == 'projects' else ''}", **{"data-metric": "projects", "type": "button"}),
-                    class_="dcp-chart-toggle",
-                ),
-                class_="dcp-panel-head",
-            ),
+            _dcp_chart_header(selected_uf, chart_type, metric),
             tags.svg(*elems, viewBox=f"0 0 {width} {height}", class_="dcp-chart-svg", role="img"),
             tags.div(*legend_items, class_="dcp-chart-legend"),
+            class_="dcp-panel dcp-chart-panel",
+        )
+
+    def _dcp_power_band_chart(bands, selected_uf, chart_type="power_band"):
+        width, height = 760, 260
+        left, right, top, bottom = 48, 20, 28, 46
+        plot_w = width - left - right
+        plot_h = height - top - bottom
+        max_count = max((b["count"] for b in bands), default=0) or 1
+        axis_max = max(5, int(((max_count + 4) // 5) * 5))
+        step = plot_w / max(len(bands), 1)
+        bar_w = min(step * 0.96, 120)
+        elems = []
+        for i in range(6):
+            y = top + plot_h - (plot_h * i / 5)
+            val = axis_max * i / 5
+            elems.append(_svg_tag("line", x1=left, y1=y, x2=width - right, y2=y, class_="dcp-chart-grid"))
+            elems.append(_svg_tag("text", _dcp_fmt(val), x=left - 10, y=y + 4, class_="dcp-chart-axis", **{"text-anchor": "end"}))
+        elems.append(_svg_tag("line", x1=left, y1=top + plot_h, x2=width - right, y2=top + plot_h, class_="dcp-chart-axis-line"))
+        for idx, band in enumerate(bands):
+            x = left + step * idx + step / 2
+            count = band["count"]
+            h = count / axis_max * plot_h if count else 0
+            y = top + plot_h - h
+            if count:
+                elems.append(_svg_tag("rect", x=x - bar_w / 2, y=y, width=bar_w, height=max(h, 1), fill="#24577F", rx=1))
+                elems.append(_svg_tag("text", _dcp_fmt(count), x=x, y=y - 8, class_="dcp-band-value", **{"text-anchor": "middle"}))
+            elems.append(_svg_tag("text", band["label"], x=x, y=top + plot_h + 26, class_="dcp-chart-axis dcp-band-axis", **{"text-anchor": "middle"}))
+        return tags.div(
+            _dcp_chart_header(selected_uf, chart_type),
+            tags.svg(*elems, viewBox=f"0 0 {width} {height}", class_="dcp-chart-svg", role="img"),
+            tags.div("Quantidade de solicitações por faixa de potência calculada no período selecionado.", class_="dcp-muted dcp-band-note"),
             class_="dcp-panel dcp-chart-panel",
         )
 
@@ -2832,6 +2894,7 @@ def server(input: Inputs, output: Outputs, session: Session):
         series = _dcp_year_series(rows, period_years)
         possible_series = _dcp_possible_year_series(rows, period_years)
         raw_series = _dcp_raw_year_series(rows, raw_period_years)
+        power_band_series = _dcp_power_band_series(rows, period_years)
         if chart_type == "possible":
             chart_series = possible_series
             chart_years = period_years
@@ -2840,6 +2903,11 @@ def server(input: Inputs, output: Outputs, session: Session):
         elif chart_type == "raw":
             chart_series = raw_series
             chart_years = raw_period_years
+            chart_include_inviavel = True
+            chart_include_line = False
+        elif chart_type == "power_band":
+            chart_series = series
+            chart_years = period_years
             chart_include_inviavel = True
             chart_include_line = False
         else:
@@ -2895,7 +2963,9 @@ def server(input: Inputs, output: Outputs, session: Session):
                     ),
                     class_="dcp-panel dcp-map-panel",
                 ),
-                _dcp_chart(chart_series, selected_uf, chart_type=chart_type, metric=metric, include_inviavel=chart_include_inviavel, include_line=chart_include_line),
+                _dcp_power_band_chart(power_band_series, selected_uf, chart_type=chart_type)
+                if chart_type == "power_band"
+                else _dcp_chart(chart_series, selected_uf, chart_type=chart_type, metric=metric, include_inviavel=chart_include_inviavel, include_line=chart_include_line),
                 _dcp_ranking(state_totals, ref_year),
                 class_="dcp-main-grid",
             ),

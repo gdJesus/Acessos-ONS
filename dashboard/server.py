@@ -2543,16 +2543,11 @@ def server(input: Inputs, output: Outputs, session: Session):
         if distinct_revisions:
             values = [max(0.0, _dcp_raw_panel_mw(r, year)) for r in rows]
         else:
-            project_values = {}
-            for r in rows:
-                key = _dcp_project_key(r)
-                if not key:
-                    continue
-                project_values.setdefault(key, 0.0)
-                mw = _dcp_raw_panel_mw(r, year)
-                if mw > 0:
-                    project_values[key] += mw
-            values = list(project_values.values())
+            values = [
+                max(0.0, _dcp_raw_year_mw(r, year))
+                for r in rows
+                if _protocol_type(r.get("main_protocol")) == "SPA"
+            ]
         if not values:
             return []
         max_upper = _dcp_power_band_upper(max(values))

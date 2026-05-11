@@ -2535,11 +2535,15 @@ def server(input: Inputs, output: Outputs, session: Session):
         ]
 
     def _dcp_power_band_series(rows, year):
-        values = []
+        project_values = {}
         for r in rows:
-            mw = _dcp_panel_mw(r, year)
+            key = _dcp_project_key(r)
+            if not key:
+                continue
+            mw = _dcp_raw_panel_mw(r, year)
             if mw > 0:
-                values.append(mw)
+                project_values[key] = project_values.get(key, 0.0) + mw
+        values = list(project_values.values())
         if not values:
             return []
         max_upper = int(((max(values) - 1e-9) // 50 + 1) * 50)

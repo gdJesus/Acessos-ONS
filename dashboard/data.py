@@ -126,14 +126,24 @@ _log(f"🔄 Documentos no cache: {len(documentos_raw)} linhas")
 
 # ─── Transformações a partir dos DataFrames em cache ────────────────────
 _t = _time.perf_counter()
-_log(f"🔄 Transformando EAV em modelo de protocolos ({len(raw_full)} linhas)…")
-PROTOCOLS = transform_eav_to_model(raw_full) if raw_full is not None and not raw_full.empty else []
+_prebuilt_protocols = _SQL_CACHE.get("model_protocols")
+if isinstance(_prebuilt_protocols, list):
+    _log(f"⚡ Usando modelo de protocolos pré-processado ({len(_prebuilt_protocols)} protocolos)…")
+    PROTOCOLS = _prebuilt_protocols
+else:
+    _log(f"🔄 Transformando EAV em modelo de protocolos ({len(raw_full)} linhas)…")
+    PROTOCOLS = transform_eav_to_model(raw_full) if raw_full is not None and not raw_full.empty else []
 PROTOCOLS_BY_PROTO = {p["protocolo"]: p for p in PROTOCOLS}
 _log(f"  ↳ {len(PROTOCOLS)} protocolos modelados", _t)
 
 _t = _time.perf_counter()
-_log(f"🔄 Indexando metadados por protocolo ({len(solicitacoes_raw)} linhas)…")
-SOLICITACOES_META = transform_solicitacoes_meta(solicitacoes_raw)
+_prebuilt_solicitacoes_meta = _SQL_CACHE.get("solicitacoes_meta")
+if isinstance(_prebuilt_solicitacoes_meta, dict):
+    _log(f"⚡ Usando metadados pré-processados ({len(_prebuilt_solicitacoes_meta)} protocolos)…")
+    SOLICITACOES_META = _prebuilt_solicitacoes_meta
+else:
+    _log(f"🔄 Indexando metadados por protocolo ({len(solicitacoes_raw)} linhas)…")
+    SOLICITACOES_META = transform_solicitacoes_meta(solicitacoes_raw)
 _log(f"  ↳ {len(SOLICITACOES_META)} protocolos indexados", _t)
 
 def _build_overview_protocols(solicitacoes_meta, protocols_by_proto):
@@ -176,8 +186,13 @@ OVERVIEW_PROTOCOLS = _build_overview_protocols(SOLICITACOES_META, PROTOCOLS_BY_P
 _log(f"🔄 Protocolos na Visão Geral: {len(OVERVIEW_PROTOCOLS)}")
 
 _t = _time.perf_counter()
-_log(f"🔄 Indexando MUST SPA/RPA por protocolo ({len(dc_must_raw)} linhas)…")
-DC_MUST_BY_PROTO = transform_datacenter_must_model(dc_must_raw)
+_prebuilt_dc_must = _SQL_CACHE.get("dc_must_by_proto")
+if isinstance(_prebuilt_dc_must, dict):
+    _log(f"⚡ Usando MUST SPA/RPA pré-processado ({len(_prebuilt_dc_must)} protocolos)…")
+    DC_MUST_BY_PROTO = _prebuilt_dc_must
+else:
+    _log(f"🔄 Indexando MUST SPA/RPA por protocolo ({len(dc_must_raw)} linhas)…")
+    DC_MUST_BY_PROTO = transform_datacenter_must_model(dc_must_raw)
 _log(f"  ↳ {len(DC_MUST_BY_PROTO)} protocolos com MUST", _t)
 
 # Análise técnica (apenas tipo 13 = PL) — indexada por id_solicitacao

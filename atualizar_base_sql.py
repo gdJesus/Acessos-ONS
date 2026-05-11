@@ -120,6 +120,26 @@ def main() -> None:
     documentos_raw = load_documentos_emitidos_data()
     print(f"[CACHE]   {len(documentos_raw)} linhas.", flush=True)
 
+    # Pré-processa os trechos mais caros da inicialização. O app continua
+    # aceitando caches antigos, mas caches novos evitam refazer isso no Posit.
+    from dashboard.transforms import (
+        transform_eav_to_model,
+        transform_solicitacoes_meta,
+        transform_datacenter_must_model,
+    )
+
+    print("[CACHE] Pré-processando modelos para acelerar o startup do Posit Connect...", flush=True)
+    model_protocols = transform_eav_to_model(raw_full) if raw_full is not None and not raw_full.empty else []
+    solicitacoes_meta = transform_solicitacoes_meta(solicitacoes_raw)
+    dc_must_by_proto = transform_datacenter_must_model(dc_must_raw)
+    print(
+        "[CACHE]   "
+        f"{len(model_protocols)} protocolos modelados; "
+        f"{len(solicitacoes_meta)} metadados; "
+        f"{len(dc_must_by_proto)} protocolos SPA/RPA com MUST.",
+        flush=True,
+    )
+
     payload = {
         "cache_version": CACHE_VERSION,
         "generated_at": datetime.now().isoformat(timespec="seconds"),
@@ -132,6 +152,9 @@ def main() -> None:
         "analise_raw": analise_raw,
         "cust_raw": cust_raw,
         "documentos_raw": documentos_raw,
+        "model_protocols": model_protocols,
+        "solicitacoes_meta": solicitacoes_meta,
+        "dc_must_by_proto": dc_must_by_proto,
     }
 
     saved = save_sql_cache(payload, out_path)

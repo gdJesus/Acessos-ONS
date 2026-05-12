@@ -152,7 +152,11 @@ html, body {
   border-left: 4px solid transparent; transition: transform 0.15s, box-shadow 0.15s;
 }
 .stat-card:hover { transform: translateY(-1px); box-shadow: var(--shadow-md); }
+.stat-card.neutral { border-left-color: var(--green-dark); }
 .stat-card.green { border-left-color: var(--green-accent); }
+.stat-card.cyan { border-left-color: var(--cyan); }
+.stat-card.blue { border-left-color: #2563EB; }
+.stat-card.red { border-left-color: #DC2626; }
 .stat-card.amber { border-left-color: var(--ponta); }
 .stat-card.purple { border-left-color: var(--fora-ponta); }
 .stat-icon {
@@ -160,7 +164,11 @@ html, body {
   display: flex; align-items: center; justify-content: center;
   font-size: 15px; margin-bottom: 10px;
 }
+.stat-card.neutral .stat-icon { background: #EAF3E3; color: var(--green-dark); }
 .stat-card.green .stat-icon { background: var(--green-pale); color: var(--green-dark); }
+.stat-card.cyan .stat-icon { background: #CFFAFE; color: var(--cyan); }
+.stat-card.blue .stat-icon { background: #DBEAFE; color: #2563EB; }
+.stat-card.red .stat-icon { background: #FEE2E2; color: #DC2626; }
 .stat-card.amber .stat-icon { background: var(--ponta-bg); color: var(--ponta); }
 .stat-card.purple .stat-icon { background: var(--fora-ponta-bg); color: var(--fora-ponta); }
 .stat-value {

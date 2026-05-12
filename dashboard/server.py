@@ -2671,11 +2671,11 @@ def server(input: Inputs, output: Outputs, session: Session):
 
     def _dcp_card(title, value, sub, tone, icon, info=None):
         stat_tone = {
-            "neutral": "green",
-            "cyan": "green",
+            "neutral": "neutral",
+            "cyan": "cyan",
             "green": "green",
-            "blue": "amber",
-            "red": "purple",
+            "blue": "blue",
+            "red": "red",
             "purple": "purple",
         }.get(tone, "green")
         title_children = [tags.span(title)]

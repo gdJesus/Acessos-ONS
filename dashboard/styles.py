@@ -647,9 +647,17 @@ html, body {
 .dcp-title-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
 .dcp-kpi-row {
   display: grid;
-  grid-template-columns: repeat(6, minmax(160px, 1fr));
-  gap: 18px;
-  margin-bottom: 20px;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 16px;
+  margin-bottom: 24px;
+}
+.dcp-kpi-row .stat-card { min-width: 0; }
+.dcp-kpi-row .stat-label { display: inline-flex; align-items: center; gap: 6px; }
+.dcp-stat-sub {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 4px;
+  font-weight: 500;
 }
 .dcp-kpi-card {
   display: flex;

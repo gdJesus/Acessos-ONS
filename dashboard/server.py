@@ -2670,18 +2670,23 @@ def server(input: Inputs, output: Outputs, session: Session):
         return "0%" if not total else f"{round(100 * value / total):.0f}%"
 
     def _dcp_card(title, value, sub, tone, icon, info=None):
+        stat_tone = {
+            "neutral": "green",
+            "cyan": "green",
+            "green": "green",
+            "blue": "amber",
+            "red": "purple",
+            "purple": "purple",
+        }.get(tone, "green")
         title_children = [tags.span(title)]
         if info:
             title_children.append(tags.span("i", class_="dcp-info-dot", title=info, **{"aria-label": info}))
         return tags.div(
-            tags.div(icon, class_=f"dcp-card-icon {tone}"),
-            tags.div(
-                tags.div(*title_children, class_="dcp-card-title"),
-                tags.div(value, class_="dcp-card-value"),
-                tags.div(sub, class_="dcp-card-sub"),
-                class_="dcp-card-copy",
-            ),
-            class_="dcp-kpi-card",
+            tags.div(icon, class_="stat-icon"),
+            tags.div(value, class_="stat-value"),
+            tags.div(*title_children, class_="stat-label"),
+            tags.div(sub, class_="dcp-stat-sub"),
+            class_=f"stat-card {stat_tone}",
         )
 
     def _dcp_chart_title_options(selected_uf):
@@ -2914,7 +2919,7 @@ def server(input: Inputs, output: Outputs, session: Session):
             chart_series = possible_series
             chart_years = period_years
             chart_include_inviavel = False
-            chart_include_line = True
+            chart_include_line = False
         elif chart_type == "raw":
             chart_series = raw_series
             chart_years = raw_period_years
@@ -2957,7 +2962,8 @@ def server(input: Inputs, output: Outputs, session: Session):
                 _dcp_card("Em análise", _dcp_fmt_mw(summary["analise"]), f"{_dcp_pct(summary['analise'], total)} do total", "blue", "◷"),
                 _dcp_card("Inviáveis", _dcp_fmt_mw(summary["inviavel"]), f"{_dcp_pct(summary['inviavel'], total)} do total", "red", "×"),
                 _dcp_card("CUST assinados", _dcp_fmt_mw(summary["cust"]), f"{_dcp_pct(summary['cust'], total)} do total", "purple", "◇"),
-                class_="dcp-kpi-row",
+                class_="cards-row dcp-kpi-row",
+                style="grid-template-columns: repeat(6, 1fr);",
             ),
             tags.div(
                 tags.div(

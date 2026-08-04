@@ -20,6 +20,88 @@ from .constants import (
 )
 from .utils import normalize_uf, parse_br_number, fmt_date
 
+
+CUST_DEADLINE_OVERRIDES = {}
+
+CUST_STATUS_OVERRIDES = {}
+
+
+def normalize_cust_contract_code(value):
+    if value is None:
+        return ""
+    try:
+        if pd.isna(value):
+            return ""
+    except Exception:
+        pass
+    code = str(value).strip()
+    if code in ("", "—", "-", "None", "nan", "NaT", "NULL"):
+        return ""
+    return code if code.upper().startswith("CUST") else ""
+
+
+def cust_info_from_solicitacao_meta(proto, meta):
+    meta = meta or {}
+    cod_contrato = normalize_cust_contract_code(meta.get("cod_contrato"))
+    dat_assinatura = pd.to_datetime(meta.get("din_assinaturacontrato"), errors="coerce")
+    if not cod_contrato or pd.isna(dat_assinatura):
+        return None
+    return {
+        "num_protocolo": str(proto or meta.get("protocolo") or "").strip(),
+        "cod_contrato": cod_contrato,
+        "dat_assinatura": dat_assinatura,
+        "data_assinatura_cust": fmt_date(dat_assinatura),
+        "origem_cust": "bca.dbo.tb_solicitacaoacesso",
+    }
+
+
+def signed_cust_info_for_protocol(proto, meta, cust_info):
+    if not cust_info:
+        return None
+
+    raw_bdt_code = str(cust_info.get("cod_contrato") or "").strip()
+    dat_inicio_vigencia = pd.to_datetime(cust_info.get("dat_inicio_vigencia"), errors="coerce")
+    dat_assinatura_bdt = pd.to_datetime(cust_info.get("dat_assinatura"), errors="coerce")
+    if not raw_bdt_code or pd.isna(dat_inicio_vigencia) or pd.isna(dat_assinatura_bdt):
+        return None
+
+    meta_info = cust_info_from_solicitacao_meta(proto, meta)
+    bdt_cust_code = normalize_cust_contract_code(raw_bdt_code)
+    if not meta_info and not bdt_cust_code:
+        return None
+
+    out = dict(cust_info)
+    out["num_protocolo"] = str(proto or cust_info.get("num_protocolo") or "").strip()
+    out["cod_contrato_bdt"] = raw_bdt_code
+    out["dat_inicio_vigencia"] = dat_inicio_vigencia
+
+    if meta_info:
+        out["cod_contrato"] = meta_info["cod_contrato"]
+        out["dat_assinatura"] = meta_info["dat_assinatura"]
+        out["data_assinatura_cust"] = meta_info["data_assinatura_cust"]
+        out["origem_cust"] = meta_info["origem_cust"]
+    else:
+        out["cod_contrato"] = bdt_cust_code
+        out["dat_assinatura"] = dat_assinatura_bdt
+        out["data_assinatura_cust"] = fmt_date(dat_assinatura_bdt)
+        out["origem_cust"] = "bdt.tb_contrato"
+    return out
+
+
+def apply_cust_deadline_override(proto, prazo_cust_dt):
+    override = CUST_DEADLINE_OVERRIDES.get(str(proto or "").strip().upper())
+    return override if override is not None else prazo_cust_dt
+
+
+def apply_cust_status_override(proto, cust_status, cust_label):
+    override = CUST_STATUS_OVERRIDES.get(str(proto or "").strip().upper())
+    if override is None:
+        return cust_status, cust_label
+    if cust_status in {"assinado", "anulado", "inviavel", "ptdis"}:
+        return cust_status, cust_label
+    return override
+
+
 def transform_eav_to_model(raw_df):
     """
     Transforma o DataFrame EAV bruto (query SQL) no modelo do dashboard.
@@ -823,6 +905,8 @@ def build_datacenter_rows(entries, protocols_by_proto, solicitacoes_meta, dc_mus
 
         # 2) Data da emissão = din_emissaodocumento (já vem em data_emissao)
         din_emissao_doc = meta.get("din_emissaodocumento")
+        status_real = clean_text(meta.get("dsc_status"))
+        solicitacao_anulada = "anul" in str(status_real or "").lower()
 
         # 3) Prazo CUST = din_emissaodocumento + 90 dias
         prazo_cust_dt = None
@@ -831,19 +915,30 @@ def build_datacenter_rows(entries, protocols_by_proto, solicitacoes_meta, dc_mus
             if not pd.isna(emissao_dt):
                 prazo_cust_dt = emissao_dt + pd.Timedelta(days=90)
 
-        # 4) Verificar se assinou CUST (look up em cust_by_proto pelos protocolos da entry)
+        # 4) Verificar se assinou CUST no proprio protocolo da linha.
+        # Protocolos relacionados/revisados nao devem herdar o CUST entre si.
         cust_info = None
-        for proto in protos:
-            if proto in cust_by_proto:
-                cust_info = cust_by_proto[proto]
+        main_proto = entry.get("main_protocol") or (protos[0] if protos else "")
+        prazo_cust_dt = apply_cust_deadline_override(main_proto, prazo_cust_dt)
+        for candidate in (main_proto, str(main_proto or "").upper()):
+            if candidate in cust_by_proto:
+                cust_info = cust_by_proto[candidate]
                 break
+        cust_info = signed_cust_info_for_protocol(main_proto, meta, cust_info)
 
         cod_contrato = ""
+        data_assinatura_cust = "—"
         if cust_info:
-            cod_contrato = cust_info.get("cod_contrato", "") or ""
+            cod_contrato = normalize_cust_contract_code(cust_info.get("cod_contrato"))
+            dat_assinatura = pd.to_datetime(cust_info.get("dat_assinatura"), errors="coerce")
+            if cod_contrato and pd.notna(dat_assinatura):
+                data_assinatura_cust = fmt_date(dat_assinatura)
 
         # Status do CUST: assinado / no prazo / não assinado
-        if cod_contrato:
+        if solicitacao_anulada:
+            cust_status = "anulado"
+            cust_label = "Anulada"
+        elif cod_contrato:
             cust_status = "assinado"
             cust_label = cod_contrato
         else:
@@ -860,6 +955,7 @@ def build_datacenter_rows(entries, protocols_by_proto, solicitacoes_meta, dc_mus
                 # Sem data de emissão de documento ainda
                 cust_status = ""
                 cust_label = "—"
+        cust_status, cust_label = apply_cust_status_override(main_proto, cust_status, cust_label)
 
         rows.append({
             "item": idx,
@@ -872,7 +968,7 @@ def build_datacenter_rows(entries, protocols_by_proto, solicitacoes_meta, dc_mus
             "tipo": clean_text(meta.get("nom_tpsolicitacaoacesso")),
             "uf": normalize_uf(meta.get("nom_uf")),
             "rede": rede,
-            "status": clean_text(meta.get("dsc_status")),
+            "status": status_real,
             "analista": clean_text(meta.get("nom_analistaacessoresponsavel")),
             "conexao": clean_text(meta.get("dsc_ptoconexao"), conexao_model or "—"),
             "tensao": tensao,
@@ -895,6 +991,7 @@ def build_datacenter_rows(entries, protocols_by_proto, solicitacoes_meta, dc_mus
             "cust_status": cust_status,
             "cust_label": cust_label,
             "cod_contrato": cod_contrato,
+            "data_assinatura_cust": data_assinatura_cust if cust_status == "assinado" else "—",
             "potencia_max": potencia_max,
             "year_values": year_values,
             "contract_start_year": contract_start_year,

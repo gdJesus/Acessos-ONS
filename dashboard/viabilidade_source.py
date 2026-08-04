@@ -107,8 +107,11 @@ def _read_xlsx_rows(path, sheet_name="Solicitações"):
         header_row = rows_raw.get(1, {})
         if not header_row:
             return []
-        max_col = max(header_row.keys())
-        headers = [header_row.get(i, f"Col{i}") for i in range(1, max_col + 1)]
+        max_col = max(max(row.keys()) for row in rows_raw.values() if row)
+        headers = [
+            (str(header_row.get(i, "")).strip() or f"Col{i}")
+            for i in range(1, max_col + 1)
+        ]
 
         out = []
         for row_idx in sorted(rows_raw.keys()):
@@ -123,12 +126,21 @@ def _read_xlsx_rows(path, sheet_name="Solicitações"):
         return out
 
 
+def _first_row_value(row, *headers):
+    for h in headers:
+        val = row.get(h)
+        if val is not None and str(val).strip():
+            return str(val).strip()
+    return ""
+
+
 def load_viabilidades(path="viabilidades.xlsx"):
     """Carrega o BD entrada multi-aba (FONTE DE VERDADE).
 
     Estrutura:
       - Aba 'Pontos' (MESTRA): cols Protocolo, Ponto, Empreendimento, Rede,
-        Tensão (kV), Viabilidade Geral. Define quantas linhas existem.
+        Tensão (kV), Viabilidade Geral, Relação Protocolo Revisado e UF.
+        Define quantas linhas existem.
       - Abas auxiliares (lookup por Protocolo + Ponto):
         * 'Viabilidade'         — dropdown por ano
         * 'Condicionantes'      — texto livre por ano
@@ -145,6 +157,7 @@ def load_viabilidades(path="viabilidades.xlsx"):
         {
           "protocolo": "...", "ponto": "...", "empreendimento": "...",
           "rede": "...", "tensao": "...", "viabilidade_geral": "...",
+          "uf": "...",
           "anos": {
             2025: {"viabilidade":..., "condicionantes":..., "sep":...,
                    "limitado_ponta":..., "limitado_fp":...,
@@ -183,6 +196,7 @@ def load_viabilidades(path="viabilidades.xlsx"):
             "tensao": (r.get("Tensão (kV)") or r.get("Tensão") or "").strip(),
             "viabilidade_geral": (r.get("Viabilidade Geral") or "").strip(),
             "relacao_protocolo_revisado": (r.get("Relação Protocolo Revisado") or "").strip(),
+            "uf": _first_row_value(r, "UF", "Uf", "uf", "Estado", "Unidade Federativa", "Col8").upper(),
             "anos": {},
         }
         out.append(entry)
@@ -248,6 +262,7 @@ def _load_viabilidades_old_multi_aba(path):
             "tensao": (r.get("Tensão (kV)") or r.get("Tensão") or "").strip(),
             "viabilidade_geral": (r.get("Viabilidade Geral") or "").strip(),
             "relacao_protocolo_revisado": (r.get("Relação Protocolo Revisado") or "").strip(),
+            "uf": _first_row_value(r, "UF", "Uf", "uf", "Estado", "Unidade Federativa", "Col8").upper(),
             "anos": {},
         }
         for h, v in r.items():
@@ -309,6 +324,7 @@ def _load_viabilidades_legacy(path):
             "tensao": (r.get("Tensão (kV)") or r.get("Tensão") or "").strip(),
             "viabilidade_geral": (r.get("Viabilidade Geral") or "").strip(),
             "relacao_protocolo_revisado": (r.get("Relação Protocolo Revisado") or "").strip(),
+            "uf": _first_row_value(r, "UF", "Uf", "uf", "Estado", "Unidade Federativa", "Col8").upper(),
             "anos": {},
         }
 

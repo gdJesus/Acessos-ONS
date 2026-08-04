@@ -17,7 +17,7 @@ import pandas as pd
 DEFAULT_DATA_DIR = r"\\ons.org.br\\rio-arq\_PL\\_PL_PAR\\_Dados e Projetos\\DataCenters_SP"
 DEFAULT_CACHE_NAME = "dashboard_sql_cache.pkl.gz"
 DEFAULT_VIABILIDADES_NAME = "viabilidades.xlsx"
-CACHE_VERSION = 6
+CACHE_VERSION = 7
 
 
 def _as_path(value: str | os.PathLike | None) -> Optional[Path]:

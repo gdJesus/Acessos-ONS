@@ -5,127 +5,12 @@ from shiny import App, ui
 from htmltools import HTML, tags
 
 from .components import make_header, make_sidebar
-from .data import DATACENTER_ROWS, CACHE_UPDATED_AT
+from .data import CACHE_UPDATED_AT
 from .server import server
 from .styles import APP_CSS
 
 # Lê a flag definida em app.py
 SHOW_SIDEBAR = os.environ.get("DASHBOARD_SHOW_SIDEBAR", "1") == "1"
-
-# Pré-calcular opções dos filtros DC (uma vez só, não muda)
-_redes = sorted(set(r["rede"] for r in DATACENTER_ROWS if r.get("rede") and r["rede"] != "—"))
-_kvs = sorted(
-    set(r["tensao"] for r in DATACENTER_ROWS if r.get("tensao") and r["tensao"] != "—"),
-    key=lambda x: int(str(x).split(".")[0]) if str(x).replace(".", "").isdigit() else 0,
-)
-
-_statuses = sorted(
-    set((r.get("status") or "").strip() for r in DATACENTER_ROWS if (r.get("status") or "").strip() and r.get("status") != "—")
-)
-
-
-def _dc_filters_bar(prefix):
-    """Barra de filtros para a lista (prefix='dc') ou matriz (prefix='dcm').
-    Renderizada apenas uma vez, fora do output_ui — assim os inputs persistem."""
-    return tags.div(
-        tags.div(
-            tags.label("Empreendimento", class_="dc-filter-lbl"),
-            ui.input_text(f"{prefix}_empr", "", placeholder="Filtrar por nome..."),
-            class_="dc-filter-field",
-        ),
-        tags.div(
-            tags.label("Protocolo", class_="dc-filter-lbl"),
-            ui.input_text(f"{prefix}_proto", "", placeholder="SGA-..."),
-            class_="dc-filter-field",
-        ),
-        tags.div(
-            tags.label("Rede", class_="dc-filter-lbl"),
-            ui.input_selectize(
-                f"{prefix}_rede", "",
-                choices={r: r for r in _redes},
-                multiple=True,
-                options={"placeholder": "Todas"},
-            ),
-            class_="dc-filter-field",
-        ),
-        tags.div(
-            tags.label("Tensão (kV)", class_="dc-filter-lbl"),
-            ui.input_selectize(
-                f"{prefix}_kv", "",
-                choices={k: k for k in _kvs},
-                multiple=True,
-                options={"placeholder": "Todas"},
-            ),
-            class_="dc-filter-field",
-        ),
-        tags.div(
-            tags.label("Conexão", class_="dc-filter-lbl"),
-            ui.input_text(f"{prefix}_conexao", "", placeholder="Filtrar..."),
-            class_="dc-filter-field",
-        ),
-        tags.div(
-            tags.label("Viabilidade", class_="dc-filter-lbl"),
-            ui.input_selectize(
-                f"{prefix}_viab", "",
-                choices={v: v for v in [
-                    "Viável",
-                    "Viável/Condicionado",
-                    "Limitado/Viável/Condicionado",
-                    "Inviável",
-                    "Cancelada",
-                    "Anulada",
-                    "Em análise",
-                    "Pendente",
-                    "Misto",
-                ]},
-                multiple=True,
-                options={"placeholder": "Todas"},
-            ),
-            class_="dc-filter-field",
-        ),
-        tags.div(
-            tags.label("Status", class_="dc-filter-lbl"),
-            ui.input_selectize(
-                f"{prefix}_status", "",
-                choices={s: s for s in _statuses},
-                multiple=True,
-                options={"placeholder": "Todos"},
-            ),
-            class_="dc-filter-field",
-        ),
-        tags.div(
-            tags.label("Ordenar por", class_="dc-filter-lbl"),
-            ui.input_select(
-                f"{prefix}_sort", "",
-                choices={
-                    "data_desc": "Data Solic. ↓ (recente)",
-                    "data_asc": "Data Solic. ↑ (antiga)",
-                    "entrada_pl_desc": "Entrada PL ↓",
-                    "entrada_pl_asc": "Entrada PL ↑",
-                    "prazo_pl_asc": "Prazo PL ↑ (próximo)",
-                    "prazo_pl_desc": "Prazo PL ↓",
-                    "prazo_ons_asc": "Prazo ONS ↑ (próximo)",
-                    "prazo_ons_desc": "Prazo ONS ↓",
-                    "emissao_pl_desc": "Emissão PL ↓ (recente)",
-                    "emissao_pl_asc": "Emissão PL ↑ (antiga)",
-                    "emissao_doc_desc": "Emissão Doc. ↓ (recente)",
-                    "emissao_doc_asc": "Emissão Doc. ↑ (antiga)",
-                    "prazo_cust_asc": "Prazo CUST ↑ (próximo)",
-                    "prazo_cust_desc": "Prazo CUST ↓",
-                    "proto_desc": "Protocolo ↓",
-                    "proto_asc": "Protocolo ↑",
-                    "empr_asc": "Empreendimento A→Z",
-                    "empr_desc": "Empreendimento Z→A",
-                },
-                selected="data_asc",
-            ),
-            class_="dc-filter-field",
-        ),
-        ui.input_action_button(f"{prefix}_reset", "↺ Limpar filtros", class_="dc-filter-reset-btn"),
-        class_="dc-filters-bar",
-        id=f"{prefix}-filters-bar",
-    )
-
 
 app_ui = ui.page_fluid(
     ui.tags.style(APP_CSS),
@@ -134,9 +19,9 @@ app_ui = ui.page_fluid(
     ui.tags.script(HTML(f"""
     $(document).on('shiny:connected', function() {{
         {"$('body').addClass('no-sidebar');" if not SHOW_SIDEBAR else ""}
-        $('#nav_overview').html('<span class="dot"></span> Visão Geral (em desenvolvimento)');
-        $('#nav_datacenters').html('<span class="dot"></span> DataCenters');
-        $('#nav_datacenters_panel').html('<span class="dot"></span> Painel DataCenters');
+        $('#nav_overview').html('<span class="dot"></span><span class="nav-label">Visão Geral (em desenvolvimento)</span>');
+        $('#nav_datacenters').html('<span class="dot"></span><span class="nav-label">DataCenters</span>');
+        $('#nav_datacenters_panel').html('<span class="dot"></span><span class="nav-label">Painel de Data Centers na Rede Básica</span>');
 
         // Row click — Visão Geral MUST
         $(document).on('click', '.proto-table tbody tr[data-proto], .overview-list-table tbody tr[data-proto]', function() {{
@@ -168,13 +53,18 @@ app_ui = ui.page_fluid(
         $(document).on('click', '.conn-tab', function() {{
             Shiny.setInputValue('selected_point_idx', parseInt($(this).data('idx')), {{priority:'event'}});
         }});
-        // Painel DataCenters — filtro por UF no mapa
+        // Painel de Data Centers na Rede Básica — filtro por UF no mapa
         $(document).on('click', '.dcp-brazil-map .state[id]', function(e) {{
+            e.stopPropagation();
             Shiny.setInputValue('dcp_state_click', String(this.id), {{priority:'event'}});
+        }});
+        $(document).on('click', '.dcp-brazil-map', function(e) {{
+            if ($(e.target).closest('.state[id]').length) return;
+            Shiny.setInputValue('dcp_state_click', '__clear__', {{priority:'event'}});
         }});
         $(document).on('click', '.dcp-map-clear', function(e) {{
             e.preventDefault();
-            Shiny.setInputValue('dcp_state_click', '', {{priority:'event'}});
+            Shiny.setInputValue('dcp_state_click', '__clear__', {{priority:'event'}});
         }});
         $(document).on('click', '.dcp-toggle[data-metric]', function(e) {{
             e.preventDefault();
@@ -183,6 +73,15 @@ app_ui = ui.page_fluid(
         $(document).on('change', '.dcp-chart-select', function(e) {{
             Shiny.setInputValue('dcp_chart_type', String($(this).val()), {{priority:'event'}});
         }});
+        $(document).on('click', '.dcp-chart-btn[data-chart]', function(e) {{
+            e.preventDefault();
+            Shiny.setInputValue('dcp_chart_type', String($(this).data('chart')), {{priority:'event'}});
+        }});
+        document.addEventListener('wheel', function(e) {{
+            if (e.ctrlKey && e.target && e.target.closest && e.target.closest('.dcp-page')) {{
+                e.preventDefault();
+            }}
+        }}, {{ passive: false }});
     }});
     """)),
     make_header(CACHE_UPDATED_AT),

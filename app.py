@@ -10,7 +10,7 @@ A lógica foi separada no pacote dashboard/ para facilitar manutenção.
 # CONFIGURAÇÃO DA UI
 # ═══════════════════════════════════════════════════════════════════════════════
 # Mude para False para esconder a sidebar (filtros globais + navegação)
-# e mostrar apenas o painel DataCenters em tela cheia.
+# e mostrar apenas o Painel de Data Centers na Rede Básica em tela cheia.
 SHOW_SIDEBAR = True
 
 import os

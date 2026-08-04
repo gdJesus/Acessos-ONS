@@ -28,8 +28,11 @@ from .transforms import (
     compute_prazo_emissao_ons,
     clean_text,
     pick_first_date,
+    apply_cust_deadline_override,
+    apply_cust_status_override,
+    signed_cust_info_for_protocol,
 )
-from .utils import fmt_date
+from .utils import fmt_date, normalize_uf, viabilidade_sga_label
 
 _t0 = _time.perf_counter()
 
@@ -53,12 +56,12 @@ def _fmt_cache_generated_at(val, fallback_path=None):
         try:
             dt = pd.to_datetime(val, errors="coerce")
             if pd.notna(dt):
-                return dt.strftime("%d/%m/%Y")
+                return dt.strftime("%d/%m/%Y %H:%M:%S")
         except Exception:
             pass
     if fallback_path is not None:
         try:
-            return datetime.fromtimestamp(fallback_path.stat().st_mtime).strftime("%d/%m/%Y")
+            return datetime.fromtimestamp(fallback_path.stat().st_mtime).strftime("%d/%m/%Y %H:%M:%S")
         except Exception:
             pass
     return "—"
@@ -216,11 +219,66 @@ if cust_raw is not None and not cust_raw.empty:
         proto = str(row.get("num_protocolo") or "").strip()
         if not proto:
             continue
-        CUST_BY_PROTO[proto] = {
+        raw_info = {
+            "num_protocolo": proto,
             "id_contrato": row.get("id_contrato"),
             "cod_contrato": str(row.get("cod_contrato") or "").strip(),
+            "dat_inicio_vigencia": row.get("dat_inicio_vigencia"),
+            "dat_assinatura": row.get("dat_assinatura"),
         }
+        meta = (
+            (SOLICITACOES_META or {}).get(proto)
+            or (SOLICITACOES_META or {}).get(proto.upper())
+            or {}
+        )
+        cust_info = signed_cust_info_for_protocol(proto, meta, raw_info)
+        if cust_info:
+            CUST_BY_PROTO[proto] = cust_info
 _log(f"🔄 Contratos CUST indexados: {len(CUST_BY_PROTO)}")
+
+
+def _find_cust_info(protocols):
+    for proto in protocols or []:
+        key = str(proto or "").strip()
+        if not key:
+            continue
+        for candidate in (key, key.upper()):
+            info = CUST_BY_PROTO.get(candidate)
+            if info:
+                return info
+    return None
+
+
+def _set_viabilidade_display(entry, label):
+    display = dict(entry)
+    anos_display = {}
+    for ano, vals in (entry.get("anos") or {}).items():
+        vals_copy = dict(vals or {})
+        vals_copy["viabilidade"] = label
+        anos_display[ano] = vals_copy
+    display["viabilidade_geral"] = label
+    display["anos"] = anos_display
+    return display
+
+
+def _is_viabilidade_inviavel(label):
+    text = str(label or "").strip().lower()
+    return (
+        "invi" in text
+        or "não vi" in text
+        or "nao vi" in text
+        or "negad" in text
+    )
+
+
+def _is_viabilidade_sem_resultado(label):
+    text = str(label or "").strip().lower()
+    return text in ("", "—", "-", "nenhum", "pendente", "em análise", "em analise")
+
+
+def _manual_viabilidade_geral(entry):
+    value = str((entry or {}).get("viabilidade_geral") or "").strip()
+    return "" if _is_viabilidade_sem_resultado(value) else value
 
 
 def _document_type_allowed_for_protocol(proto):
@@ -278,9 +336,10 @@ _log(f"🔄 Documentos emitidos indexados: {len(DOCUMENTOS_BY_SOLIC)} solicitaç
 def _documento_emitido_from_docs(id_solicitacao, proto, meta):
     """Retorna (documento_emitido, data_emissao_ons).
 
-    Fonte principal: inbound.sgacesso.tb_documento, via id_solicitacao.
-    Se houver mais de um documento compatível, mostra todos e usa a data mais recente.
-    Fallback: bca.dbo.tb_solicitacaoacesso.num_documento_emitido / din_emissaodocumento.
+    Documento emitido: prioriza inbound.sgacesso.tb_documento, via id_solicitacao.
+    Data de emissão ONS: prioriza bca.dbo.tb_solicitacaoacesso.din_emissaodocumento.
+    O campo tb_documento.din_criacao é data de criação do registro e fica apenas
+    como fallback quando a data oficial da BCA não existir.
     """
     fallback_doc = clean_text(meta.get("num_documento_emitido"), "")
     fallback_dt = meta.get("din_emissaodocumento")
@@ -310,10 +369,12 @@ def _documento_emitido_from_docs(id_solicitacao, proto, meta):
         if num and num not in nums:
             nums.append(num)
 
+    bca_dt = pd.to_datetime(fallback_dt, errors="coerce")
     datas = [d.get("din_criacao") for d in docs if pd.notna(d.get("din_criacao"))]
-    data_mais_recente = max(datas) if datas else fallback_dt
+    data_doc_fallback = max(datas) if datas else fallback_dt
+    data_emissao_ons = bca_dt if pd.notna(bca_dt) else data_doc_fallback
     documento_emitido = "; ".join(nums) if nums else fallback_doc
-    return documento_emitido, data_mais_recente
+    return documento_emitido, data_emissao_ons
 
 
 _log(f"📌 Com viabilidade preenchida: {_com_viab}")
@@ -541,15 +602,20 @@ for idx, entry in enumerate(VIABILIDADES_ENTRIES, start=1):
         cust_status = "ptdis"
         cust_label = "PTDIS"
         cod_contrato = ""
+        data_assinatura_cust = "—"
+        cust_protocol = ""
         prazo_cust_dt = None
     else:
-        cust_info = CUST_BY_PROTO.get(proto)
+        cust_info = _find_cust_info([proto])
         cod_contrato = cust_info.get("cod_contrato", "") if cust_info else ""
+        data_assinatura_cust = cust_info.get("data_assinatura_cust", "—") if cust_info else "—"
+        cust_protocol = cust_info.get("num_protocolo", "") if cust_info else ""
         prazo_cust_dt = None
         if din_emissao_doc is not None and not pd.isna(din_emissao_doc):
             emissao_dt = pd.to_datetime(din_emissao_doc, errors="coerce")
             if not pd.isna(emissao_dt):
                 prazo_cust_dt = emissao_dt + pd.Timedelta(days=90)
+        prazo_cust_dt = apply_cust_deadline_override(proto, prazo_cust_dt)
 
         if cod_contrato:
             cust_status = "assinado"
@@ -568,6 +634,7 @@ for idx, entry in enumerate(VIABILIDADES_ENTRIES, start=1):
     # Empreendimento: prioridade Excel → banco
     empreendimento = entry.get("empreendimento") or clean_text(meta.get("nom_empreendimento"))
     conexao = entry.get("ponto") or clean_text(meta.get("dsc_ptoconexao"))
+    uf = normalize_uf(entry.get("uf"), default="") or normalize_uf(meta.get("nom_uf"), default="") or "—"
 
     # Status real do SGA/BCA.
     status_real = clean_text(meta.get("dsc_status"))
@@ -588,8 +655,12 @@ for idx, entry in enumerate(VIABILIDADES_ENTRIES, start=1):
     # do documento em sgacesso.tb_documento. Assim, se já existe PA emitido
     # e o BD entrada está vazio, a viabilidade vira Pendente.
     data_emissao_pl_fmt = fmt_date(data_envio_pl)
+    pl_emitida_pela_analise = bool(
+        data_emissao_pl_fmt
+        and str(data_emissao_pl_fmt).strip() not in ("—", "", "None", "nan", "NaT")
+    )
     pl_emitida = bool(
-        (data_emissao_pl_fmt and str(data_emissao_pl_fmt).strip() not in ("—", "", "None", "nan", "NaT"))
+        pl_emitida_pela_analise
         or (data_emissao_doc_fmt and str(data_emissao_doc_fmt).strip() not in ("—", "", "None", "nan", "NaT"))
     )
     viabilidade_info = {
@@ -606,21 +677,30 @@ for idx, entry in enumerate(VIABILIDADES_ENTRIES, start=1):
     )
 
     viabilidade_anos_display = entry
+    if uf != "SP":
+        viabilidade_manual_geral = _manual_viabilidade_geral(entry)
+        if pl_emitida_pela_analise and viabilidade_manual_geral:
+            viabilidade_resumo = viabilidade_manual_geral
+            pendencias = []
+            viabilidade_anos_display = _set_viabilidade_display(entry, viabilidade_resumo)
+        elif _is_viabilidade_sem_resultado(viabilidade_resumo):
+            viabilidade_banco = viabilidade_sga_label(meta.get("id_viabilidade"), default="")
+            if viabilidade_banco and viabilidade_banco != "Nenhum":
+                viabilidade_resumo = viabilidade_banco
+                pendencias = []
+                viabilidade_anos_display = _set_viabilidade_display(entry, viabilidade_resumo)
+
     if solicitacao_cancelada_ou_anulada:
         viabilidade_forcada = "Anulada" if solicitacao_anulada else "Cancelada"
         viabilidade_resumo = viabilidade_forcada
         pendencias = []
-        viabilidade_anos_display = dict(entry)
-        anos_display = {}
-        for ano, vals in (entry.get("anos") or {}).items():
-            vals_copy = dict(vals or {})
-            vals_copy["viabilidade"] = viabilidade_forcada
-            anos_display[ano] = vals_copy
-        viabilidade_anos_display["viabilidade_geral"] = viabilidade_forcada
-        viabilidade_anos_display["anos"] = anos_display
+        viabilidade_anos_display = _set_viabilidade_display(entry, viabilidade_forcada)
+        if solicitacao_anulada:
+            cust_status = "anulado"
+            cust_label = "Anulada"
 
-    # Se viabilidade é Inviável e não é PTDIS (SPT), CUST mostra "Inviável"
-    if not is_spt and viabilidade_resumo == "Inviável":
+    # Se viabilidade é negativa e não é PTDIS (SPT), CUST mostra "Inviável".
+    if not is_spt and _is_viabilidade_inviavel(viabilidade_resumo):
         cust_status = "inviavel"
         cust_label = "Inviável"
 
@@ -632,6 +712,7 @@ for idx, entry in enumerate(VIABILIDADES_ENTRIES, start=1):
         len(proto_tipo) >= 2
         and proto_tipo[0] == "SGA"
         and proto_tipo[1] in {"SPA", "RPA", "RVA"}
+        and uf == "SP"
         and rede == "DIT"
         and viabilidade_resumo not in viab_protegidas_spa_dit
     )
@@ -644,18 +725,13 @@ for idx, entry in enumerate(VIABILIDADES_ENTRIES, start=1):
 
         viabilidade_resumo = viabilidade_forcada
         pendencias = []
-        viabilidade_anos_display = dict(entry)
-        anos_display = {}
-        for ano, vals in (entry.get("anos") or {}).items():
-            vals_copy = dict(vals or {})
-            vals_copy["viabilidade"] = viabilidade_forcada
-            anos_display[ano] = vals_copy
-        viabilidade_anos_display["viabilidade_geral"] = viabilidade_forcada
-        viabilidade_anos_display["anos"] = anos_display
+        viabilidade_anos_display = _set_viabilidade_display(entry, viabilidade_forcada)
 
         if cust_status == "nao_assinado":
             cust_status = "verificar"
             cust_label = "Verificar"
+
+    cust_status, cust_label = apply_cust_status_override(proto, cust_status, cust_label)
 
     DATACENTER_ROWS.append({
         "item": idx,
@@ -666,7 +742,7 @@ for idx, entry in enumerate(VIABILIDADES_ENTRIES, start=1):
         "ponto_instalacao": ponto_text,
         "empreendimento": empreendimento,
         "tipo": clean_text(meta.get("nom_tpsolicitacaoacesso")),
-        "uf": clean_text(meta.get("nom_uf")),
+        "uf": uf,
         "rede": rede,
         "tensao": tensao,
         "conexao": conexao,
@@ -684,6 +760,8 @@ for idx, entry in enumerate(VIABILIDADES_ENTRIES, start=1):
         "cust_status": cust_status,
         "cust_label": cust_label,
         "cod_contrato": cod_contrato,
+        "data_assinatura_cust": data_assinatura_cust if cust_status == "assinado" else "—",
+        "cust_protocol": cust_protocol,
         "year_values": year_values,
         "year_status": year_status,
         "potencia_max": potencia_max,

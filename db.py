@@ -185,16 +185,39 @@ WHERE at.id_tpanalisetecnica = 13
   AND at.din_cancelamento IS NULL
 """
 
-# Liga num_protocolo (parecer de acesso) ao id_contrato (CUST assinado)
+# Liga num_protocolo (parecer de acesso) ao id_contrato (CUST assinado).
+# So considera contrato vigente e assinado para evitar residuos/testes.
 SQL_CUST_ASSINADO = """
+WITH contratos_validos AS (
+    SELECT
+        LTRIM(RTRIM(ap.num_protocolo)) AS num_protocolo,
+        ap.id_contrato,
+        c.cod_contrato,
+        c.dat_inicio_vigencia,
+        c.dat_assinatura,
+        ROW_NUMBER() OVER (
+            PARTITION BY LTRIM(RTRIM(ap.num_protocolo))
+            ORDER BY c.dat_assinatura DESC, c.dat_inicio_vigencia DESC, ap.id_contrato DESC
+        ) AS rn
+    FROM bdt.tb_associacontratopareceracesso ap
+    INNER JOIN bdt.tb_contrato c
+        ON ap.id_contrato = c.id_contrato
+    WHERE ap.num_protocolo IS NOT NULL
+      AND LTRIM(RTRIM(ap.num_protocolo)) <> ''
+      AND c.dat_inicio_vigencia IS NOT NULL
+      AND c.dat_assinatura IS NOT NULL
+      AND c.cod_contrato IS NOT NULL
+      AND LTRIM(RTRIM(CAST(c.cod_contrato AS NVARCHAR(255)))) <> ''
+)
 SELECT
-    LTRIM(RTRIM(ap.num_protocolo)) AS num_protocolo,
-    ap.id_contrato,
-    c.cod_contrato
-FROM bdt.tb_associacontratopareceracesso ap
-LEFT JOIN bdt.tb_contrato c ON ap.id_contrato = c.id_contrato
-WHERE ap.num_protocolo IS NOT NULL
-  AND LTRIM(RTRIM(ap.num_protocolo)) <> ''
+    num_protocolo,
+    id_contrato,
+    cod_contrato,
+    dat_inicio_vigencia,
+    dat_assinatura
+FROM contratos_validos
+WHERE rn = 1
+ORDER BY num_protocolo
 """
 
 # Documento emitido oficial: inbound.sgacesso.tb_documento.

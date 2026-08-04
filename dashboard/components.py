@@ -8,12 +8,11 @@ def make_header(data_atualizacao=None):
     badges = []
     if data_atualizacao:
         badges.append(tags.span(f"Data de Atualização {data_atualizacao}", class_="header-badge header-badge-update"))
-    badges.append(tags.span("SGA/SAM", class_="header-badge"))
 
     return tags.div(
         tags.div(
             HTML('<svg viewBox="0 0 24 24"><path d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>'),
-            tags.span("DataCenters - SP", class_="header-title"),
+            tags.span("DataCenters - RB", class_="header-title"),
             tags.span("Solicitações de Acesso — Transmissão", class_="header-subtitle"),
             class_="header-logo",
         ),
@@ -85,11 +84,6 @@ def _overview_filters_section():
             class_="filter-group",
         ),
         tags.div(
-            tags.div("UF:", class_="filter-label"),
-            ui.input_selectize("filter_uf", "", choices={}, selected=[], multiple=True, options={"placeholder": "Todas"}),
-            class_="filter-group",
-        ),
-        tags.div(
             tags.div("Rede:", class_="filter-label"),
             ui.input_selectize("filter_rede", "", choices={}, selected=[], multiple=True, options={"placeholder": "Todas"}),
             class_="filter-group",
@@ -157,6 +151,11 @@ def _datacenters_filters_section(prefix="dc", section_id="filters-dc", hidden=Tr
             class_="filter-group",
         ),
         tags.div(
+            tags.div("UF:", class_="filter-label"),
+            ui.input_selectize(f"{prefix}_uf", "", choices={}, selected=[], multiple=True, options={"placeholder": "Todas"}),
+            class_="filter-group",
+        ),
+        tags.div(
             tags.div("Rede:", class_="filter-label"),
             ui.input_selectize(f"{prefix}_rede", "", choices={}, selected=[], multiple=True, options={"placeholder": "Todas"}),
             class_="filter-group",
@@ -207,11 +206,6 @@ def _datacenters_panel_filters_section():
             class_="filter-group",
         ),
         tags.div(
-            tags.div("Período sem limite do horizonte:", class_="filter-label"),
-            ui.input_slider("dcp_raw_period", "", min=2024, max=2033, value=(2024, 2033), step=1, sep=""),
-            class_="filter-group",
-        ),
-        tags.div(
             tags.div("Ano de referência:", class_="filter-label"),
             ui.input_select("dcp_year", "", choices={"latest": "Último ano do horizonte"}, selected="latest"),
             class_="filter-group",
@@ -223,7 +217,7 @@ def _datacenters_panel_filters_section():
         ),
         tags.div(
             tags.div("Tipo:", class_="filter-label"),
-            tags.div("SPA", class_="filter-static-value"),
+            tags.div("Novos projetos e revisões", class_="filter-static-value"),
             class_="filter-group",
         ),
         ui.input_action_button("dcp_reset", "↺ Limpar filtros", class_="filter-reset"),

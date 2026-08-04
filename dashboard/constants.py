@@ -27,6 +27,15 @@ UF_MAP = {
     "SE": "Sergipe", "SP": "São Paulo", "TO": "Tocantins",
 }
 
+VIABILIDADE_SGA_MAP = {
+    0: "Nenhum",
+    1: "Viável",
+    2: "Viável com Restrições",
+    3: "Viável Condicionado",
+    4: "Viável Parcialmente",
+    5: "Negado",
+}
+
 PROTO_RE_PATTERN = r"SGA-[A-Z]{3}-\d{4}/\d{4}"
 YEARS_DC = list(range(2025, 2031))
 

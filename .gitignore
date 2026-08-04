@@ -7,3 +7,4 @@ venv/
 env/
 
 dashboard_sql_cache.pkl.gz
+password.txt

@@ -21,8 +21,8 @@ from .data import (
     DOCUMENTOS_BY_SOLIC,
     DC_MUST_BY_PROTO,
 )
-from .utils import fmt_date, normalize_uf
-from .transforms import fmt_mw, compute_rede, compute_prazo_pl, compute_prazo_emissao_ons, clean_text
+from .utils import fmt_date, normalize_uf, viabilidade_sga_label
+from .transforms import fmt_mw, compute_rede, compute_prazo_pl, compute_prazo_emissao_ons, clean_text, apply_cust_deadline_override, apply_cust_status_override
 
 
 def _excel_empreendimento_ponto(r):
@@ -47,11 +47,57 @@ def _excel_empreendimento_ponto(r):
     return empreendimento
 
 
+def _dc_empreendimento_cell(r):
+    """Célula visual de empreendimento nas tabelas DataCenters."""
+    ponto_label = str(r.get("ponto_label") or "").strip()
+    empr_main = str(r.get("empreendimento") or "").strip()
+    proto_text = str(r.get("main_protocol") or "").upper()
+    is_sam = "SAM" in proto_text
+    is_spt = "SPT" in proto_text
+
+    # SAM tem múltiplos pontos de contratação, então a linha precisa mostrar o ponto.
+    if is_sam:
+        display_text = ponto_label or str(r.get("ponto_instalacao") or "").strip() or empr_main or "—"
+        return tags.div(display_text, class_="dc-empr-name", title=display_text), display_text
+
+    # SPT deve ficar compacto: não renderiza o ponto como subtítulo abaixo do empreendimento.
+    if is_spt and empr_main:
+        return tags.div(empr_main, class_="dc-empr-name", title=empr_main), empr_main
+
+    if empr_main and ponto_label and ponto_label != empr_main:
+        return (
+            tags.div(
+                tags.div(empr_main, class_="dc-empr-name"),
+                tags.div(ponto_label, class_="dc-ponto-label"),
+            ),
+            empr_main,
+        )
+    if empr_main:
+        return tags.div(empr_main, class_="dc-empr-name", title=empr_main), empr_main
+    if ponto_label:
+        return tags.div(ponto_label, class_="dc-empr-name", title=ponto_label), ponto_label
+    return tags.div("—", class_="dc-empr-name"), ""
+
+
 def _excel_clean(v):
     if v is None:
         return ""
     s = str(v).strip()
     return "" if s in ("", "—", "-", "None", "nan", "NaT", "NULL") else v
+
+
+def _cust_info_for_proto(proto):
+    key = str(proto or "").strip()
+    if not key:
+        return None
+    return CUST_BY_PROTO.get(key) or CUST_BY_PROTO.get(key.upper())
+
+
+def _cust_signature_label(cust_info):
+    if not cust_info:
+        return "—"
+    value = cust_info.get("data_assinatura_cust") or fmt_date(cust_info.get("dat_assinatura"))
+    return value if value and str(value).strip() not in ("", "—", "None", "nan", "NaT") else "—"
 
 
 def _year_dict_get(d, year):
@@ -72,6 +118,259 @@ def _apply_manual_must_overrides(proto, year_values):
 
 
 INICIO_HORIZONTE_LABEL = "Início do horizonte"
+
+_MES_ABREV_PT = ("jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez")
+_MES_NUM_PT = {
+    "jan": 1, "janeiro": 1,
+    "fev": 2, "fevereiro": 2,
+    "mar": 3, "marco": 3, "março": 3,
+    "abr": 4, "abril": 4,
+    "mai": 5, "maio": 5,
+    "jun": 6, "junho": 6,
+    "jul": 7, "julho": 7,
+    "ago": 8, "agosto": 8,
+    "set": 9, "setembro": 9,
+    "out": 10, "outubro": 10,
+    "nov": 11, "novembro": 11,
+    "dez": 12, "dezembro": 12,
+}
+
+
+def _fmt_mes_ano(value):
+    if value is None:
+        return "—"
+    if isinstance(value, str):
+        text = value.strip()
+        if text in ("", "—", "-", "None", "nan", "NaT", "NULL"):
+            return "—"
+        dt = pd.to_datetime(text, dayfirst=True, errors="coerce")
+    else:
+        dt = pd.to_datetime(value, errors="coerce")
+    if pd.isna(dt):
+        return "—"
+    return f"{_MES_ABREV_PT[int(dt.month) - 1]}/{int(dt.year)}"
+
+
+def _fmt_mes_ano_parts(year, month):
+    if not year or not month:
+        return "—"
+    try:
+        year_i = int(year)
+        month_i = int(month)
+    except Exception:
+        return "—"
+    if not (1 <= month_i <= 12):
+        return "—"
+    return f"{_MES_ABREV_PT[month_i - 1]}/{year_i}"
+
+
+def _norm_period_text(value):
+    text = str(value or "").strip().lower()
+    return (
+        text.replace("ç", "c")
+        .replace("á", "a")
+        .replace("à", "a")
+        .replace("ã", "a")
+        .replace("â", "a")
+        .replace("é", "e")
+        .replace("ê", "e")
+        .replace("í", "i")
+        .replace("ó", "o")
+        .replace("ô", "o")
+        .replace("õ", "o")
+        .replace("ú", "u")
+    )
+
+
+def _period_start_parts(value, fallback_year=None):
+    if value is None:
+        return (fallback_year, 1) if fallback_year else (None, None)
+    if hasattr(value, "month") and hasattr(value, "year"):
+        return int(value.year), int(value.month)
+
+    text = str(value).strip()
+    if text in ("", "—", "-", "None", "nan", "NaT", "NULL"):
+        return (fallback_year, 1) if fallback_year else (None, None)
+    norm = _norm_period_text(text)
+
+    month = None
+    for name, num in _MES_NUM_PT.items():
+        if re.search(rf"\b{re.escape(_norm_period_text(name))}\b", norm):
+            month = num
+            break
+
+    mt = re.search(r"\b(\d{1,2})\s*/\s*(20\d{2})\b", norm)
+    if mt:
+        month_raw = int(mt.group(1))
+        if 1 <= month_raw <= 12:
+            return int(mt.group(2)), month_raw
+
+    mt = re.search(r"\b(20\d{2})\s*[-/]\s*(\d{1,2})\b", norm)
+    if mt:
+        month_raw = int(mt.group(2))
+        if 1 <= month_raw <= 12:
+            return int(mt.group(1)), month_raw
+
+    year = None
+    mt = re.search(r"\b(20\d{2})\b", norm)
+    if mt:
+        year = int(mt.group(1))
+    elif fallback_year:
+        year = int(fallback_year)
+
+    if month is None and year is not None:
+        month = 1
+    return year, month
+
+
+def _to_must_number(v):
+    if v is None:
+        return None
+    s_val = str(v).strip()
+    if s_val in ("", "—", "-", "None", "nan", "NULL"):
+        return None
+    try:
+        return float(s_val.replace(".", "").replace(",", "."))
+    except Exception:
+        try:
+            return float(s_val)
+        except Exception:
+            return None
+
+
+def _year_from_must_label(label, base_year=None):
+    if isinstance(label, int):
+        return label
+    text = str(label or "").strip()
+    if text.isdigit() and len(text) == 4:
+        return int(text)
+    if not base_year:
+        return None
+    if "Corrente" in text or "horizonte" in text.lower():
+        return int(base_year)
+    if text.startswith("Ano "):
+        try:
+            return int(base_year) + int(text.split()[-1]) - 1
+        except Exception:
+            return None
+    return None
+
+
+def _iter_must_values(vals, selected_key=None):
+    if isinstance(vals, dict):
+        if selected_key is None:
+            return vals.values()
+        if selected_key in vals:
+            return [vals.get(selected_key)]
+
+        sel_cod = str(selected_key[0] if isinstance(selected_key, tuple) and len(selected_key) > 0 else selected_key or "").strip()
+        sel_inst = str(selected_key[1] if isinstance(selected_key, tuple) and len(selected_key) > 1 else "").strip()
+        matches = []
+        for key, value in vals.items():
+            if isinstance(key, tuple):
+                key_cod = str(key[0] if len(key) > 0 else "").strip()
+                key_inst = str(key[1] if len(key) > 1 else "").strip()
+                if key_cod == sel_cod and key_inst == sel_inst:
+                    matches.append(value)
+            elif str(key).strip() == sel_cod:
+                matches.append(value)
+        return matches
+    if isinstance(vals, (list, tuple, set)):
+        return vals
+    return [vals]
+
+
+def _period_has_must_for_point(vals, ponto_key=None):
+    for tipo in ("ponta", "fora"):
+        for raw in _iter_must_values((vals or {}).get(tipo, {}), ponto_key):
+            if _to_must_number(raw) is not None:
+                return True
+    return False
+
+
+def _first_must_entry_from_model(model, base_year=None, ponto_key=None):
+    candidates = []
+    for per in (model or {}).get("periodos") or []:
+        start_year, start_month = _period_start_parts(per.get("inicio"))
+        for label, vals in (per.get("must") or {}).items():
+            if not _period_has_must_for_point(vals, ponto_key):
+                continue
+            year = start_year or _year_from_must_label(label, base_year)
+            month = start_month or 1
+            if year and month:
+                candidates.append((int(year), int(month)))
+    return _fmt_mes_ano_parts(*min(candidates)) if candidates else "—"
+
+
+def _first_must_entry_from_dc_must(dc_must):
+    candidates = []
+    for det in (dc_must or {}).get("detalhes") or []:
+        if det.get("ponta") is None and det.get("fora") is None:
+            continue
+        year, month = _period_start_parts(det.get("periodo_inicio"), det.get("ano_inicio") or det.get("ano"))
+        if year and month:
+            candidates.append((int(year), int(month)))
+    return _fmt_mes_ano_parts(*min(candidates)) if candidates else "—"
+
+
+def _first_must_entry_from_year_values(year_values):
+    years = []
+    for year, vals in (year_values or {}).items():
+        if (vals or {}).get("ponta") is not None or (vals or {}).get("fora") is not None:
+            try:
+                years.append(int(year))
+            except Exception:
+                pass
+    return _fmt_mes_ano_parts(min(years), 1) if years else "—"
+
+
+def _protocol_model(proto):
+    proto_norm = str(proto or "").strip()
+    return next((p for p in PROTOCOLS if str(p.get("protocolo") or "").strip() == proto_norm), None)
+
+
+def _row_ponto_key_from_model(model, row):
+    if not model:
+        return None
+    candidates = {
+        clean_text(row.get("ponto_instalacao"), ""),
+        clean_text(row.get("ponto_label"), ""),
+        clean_text(row.get("conexao"), ""),
+    }
+    candidates = {c.lower() for c in candidates if c}
+    for pt in model.get("pontos") or []:
+        cod = clean_text(pt.get("cod"), "")
+        inst = clean_text(pt.get("instalacao"), "")
+        labels = {cod.lower(), inst.lower(), f"{cod} — {inst}".lower()}
+        if candidates & {label for label in labels if label}:
+            return (cod, inst)
+    return None
+
+
+def _data_entrada_acesso_for_protocol(proto, base_year=None, ponto_key=None, year_values=None):
+    model_label = _first_must_entry_from_model(_protocol_model(proto), base_year, ponto_key)
+    if model_label != "—":
+        return model_label
+
+    dc_label = _first_must_entry_from_dc_must(DC_MUST_BY_PROTO.get(proto))
+    if dc_label != "—":
+        return dc_label
+
+    return _first_must_entry_from_year_values(year_values)
+
+
+def _data_entrada_acesso_for_dc_row(row):
+    proto = row.get("main_protocol")
+    model = _protocol_model(proto)
+    ponto_key = _row_ponto_key_from_model(model, row)
+    base_year = None
+    try:
+        dt = pd.to_datetime(row.get("data_solicitacao"), dayfirst=True, errors="coerce")
+        if pd.notna(dt):
+            base_year = int(dt.year)
+    except Exception:
+        base_year = None
+    return _data_entrada_acesso_for_protocol(proto, base_year, ponto_key, row.get("year_values"))
 
 _BRAZIL_MAP_PATH = os.path.join(os.path.dirname(__file__), "assets", "brazil_map.svg")
 try:
@@ -103,16 +402,6 @@ def _horizonte_label(status):
     }.get(status or "", "")
 
 
-VIABILIDADE_SGA_MAP = {
-    0: "Nenhum",
-    1: "Viável",
-    2: "Viável com Restrições",
-    3: "Viável Condicionado",
-    4: "Viável Parcialmente",
-    5: "Negado",
-}
-
-
 def _sid_key(value):
     if value is None or pd.isna(value):
         return None
@@ -142,7 +431,11 @@ def _document_type_allowed_for_protocol(proto):
 
 
 def _overview_document_date(p):
-    """Data de emissão oficial via sgacesso.tb_documento; fallback BCA."""
+    """Data de emissão ONS: BCA primeiro; tb_documento.din_criacao só fallback."""
+    bca_dt = pd.to_datetime(p.get("din_emissaodocumento"), errors="coerce")
+    if pd.notna(bca_dt):
+        return bca_dt
+
     sid = _sid_key(p.get("id_solicitacao"))
     allowed = _document_type_allowed_for_protocol(p.get("protocolo"))
     datas = []
@@ -152,19 +445,11 @@ def _overview_document_date(p):
                 dt = pd.to_datetime(d.get("din_criacao"), errors="coerce")
                 if pd.notna(dt):
                     datas.append(dt)
-    if datas:
-        return max(datas)
-    return pd.to_datetime(p.get("din_emissaodocumento"), errors="coerce")
+    return max(datas) if datas else pd.NaT
 
 
 def _overview_viabilidade_label(p):
-    val = p.get("id_viabilidade")
-    if val is None or pd.isna(val):
-        return "—"
-    try:
-        return VIABILIDADE_SGA_MAP.get(int(float(val)), str(val))
-    except Exception:
-        return str(val)
+    return viabilidade_sga_label(p.get("id_viabilidade"))
 
 
 def _overview_viab_pill_class(label):
@@ -254,16 +539,25 @@ def _overview_row_info(p):
     )
     emissao_doc_dt = _overview_document_date(p)
 
-    cust_info = CUST_BY_PROTO.get(proto, {})
+    cust_info = _cust_info_for_proto(proto) or {}
     cod_contrato = str(cust_info.get("cod_contrato") or "").strip()
+    data_assinatura_cust = _cust_signature_label(cust_info) if cod_contrato else "—"
     is_spt = "SPT" in str(proto).upper()
+    status = clean_text(p.get("dsc_status"), "—")
+    solicitacao_anulada = "anul" in str(status or "").lower()
     prazo_cust_dt = pd.NaT
     if pd.notna(emissao_doc_dt):
         prazo_cust_dt = emissao_doc_dt + pd.Timedelta(days=90)
+    prazo_cust_dt = apply_cust_deadline_override(proto, prazo_cust_dt)
 
-    if is_spt:
+    if solicitacao_anulada:
+        cust_status = "anulado"
+        cust_label = "Anulada"
+        data_assinatura_cust = "—"
+    elif is_spt:
         cust_status = "ptdis"
         cust_label = "PTDIS"
+        data_assinatura_cust = "—"
     elif cod_contrato:
         cust_status = "assinado"
         cust_label = cod_contrato
@@ -277,6 +571,7 @@ def _overview_row_info(p):
     else:
         cust_status = ""
         cust_label = "—"
+    cust_status, cust_label = apply_cust_status_override(proto, cust_status, cust_label)
 
     data_solicitacao_dt = pd.to_datetime(p.get("din_solicitacao"), errors="coerce")
     data_solicitacao = fmt_date(data_solicitacao_dt) if pd.notna(data_solicitacao_dt) else "—"
@@ -291,7 +586,6 @@ def _overview_row_info(p):
     rede = compute_rede(proto, tensao)
     uf = normalize_uf(p.get("nom_uf"))
     conexao = _overview_conexao_label(p)
-    status = clean_text(p.get("dsc_status"), "—")
     viab = _overview_viabilidade_label(p)
 
     return {
@@ -299,6 +593,7 @@ def _overview_row_info(p):
         "nome": p.get("nome") or p.get("nom_solicitacao") or "—",
         "uf": uf,
         "data_solicitacao": data_solicitacao,
+        "data_entrada_acesso": "—",
         "data_solicitacao_year": int(data_solicitacao_dt.year) if pd.notna(data_solicitacao_dt) else None,
         "data_entrada_pl": data_entrada_pl,
         "prazo_analise_pl": prazo_pl,
@@ -312,6 +607,7 @@ def _overview_row_info(p):
         "prazo_cust": prazo_cust,
         "cust_status": cust_status,
         "cust_label": cust_label,
+        "data_assinatura_cust": data_assinatura_cust if cust_status == "assinado" else "—",
         "viabilidade": viab,
         "n_pontos": len(p.get("pontos") or []),
         "n_periodos": len(p.get("periodos") or []),
@@ -336,6 +632,7 @@ def _overview_export_row(info):
         "Emissão Doc.": info.get("data_emissao_doc") or "",
         "Prazo CUST": info.get("prazo_cust") or "",
         "CUST": info.get("cust_label") or "",
+        "Data assinatura CUST": info.get("data_assinatura_cust") or "",
         "Viabilidade": info.get("viabilidade") or "",
     }
 
@@ -365,7 +662,7 @@ def _write_overview_excel(path, rows_data):
             width = 14
             if header in ("Solicitação", "Conexão"):
                 width = 34
-            elif header in ("Protocolo", "Status", "CUST", "Viabilidade"):
+            elif header in ("Protocolo", "Status", "CUST", "Viabilidade", "Data assinatura CUST"):
                 width = 22
             elif header in ("UF", "Rede", "kV"):
                 width = 10
@@ -403,6 +700,7 @@ def _build_discretizacao_rows(rows_data, years):
             viab_ano = _excel_clean(viab_vals.get("viabilidade")) or viab_geral or _excel_clean(r.get("viabilidade_resumo"))
             detail_rows.append({
                 "Empreendimento / Ponto": _excel_empreendimento_ponto(r),
+                "UF": r.get("uf") or "",
                 "Protocolo": r.get("main_protocol") or "",
                 "Ano": ano if ano is not None else "",
                 "Status Solicitação": r.get("status") or "",
@@ -423,6 +721,7 @@ def _build_discretizacao_rows(rows_data, years):
                 "Emissão Doc.": r.get("data_emissao_doc") or "",
                 "Prazo CUST": r.get("prazo_cust") or "",
                 "CUST": r.get("cust_label") or "",
+                "Data assinatura CUST": r.get("data_assinatura_cust") or "",
                 "Rede": r.get("rede") or "",
                 "kV": r.get("tensao") or "",
                 "Conexão": r.get("conexao") or "",
@@ -436,6 +735,7 @@ def _write_dc_list_excel(path, rows_data):
     for r in rows_data:
         export.append({
             "Empreendimento / Ponto": _excel_empreendimento_ponto(r),
+            "UF": r.get("uf") or "",
             "Protocolo": r.get("main_protocol") or "",
             "Data Solicitação": r.get("data_solicitacao") or "",
             "Entrada PL": r.get("data_entrada_pl") or "",
@@ -450,6 +750,7 @@ def _write_dc_list_excel(path, rows_data):
             "Emissão Doc.": r.get("data_emissao_doc") or "",
             "Prazo CUST": r.get("prazo_cust") or "",
             "CUST": r.get("cust_label") or "",
+            "Data assinatura CUST": r.get("data_assinatura_cust") or "",
         })
     df = pd.DataFrame(export)
 
@@ -472,7 +773,7 @@ def _write_dc_list_excel(path, rows_data):
             width = 14
             if header in ("Empreendimento", "Empreendimento / Ponto", "Conexão"):
                 width = 30
-            elif header in ("Protocolo", "CUST", "Status"):
+            elif header in ("Protocolo", "CUST", "Status", "Data assinatura CUST"):
                 width = 18
             ws.column_dimensions[get_column_letter(col_idx)].width = width
             for cell in col:
@@ -487,7 +788,9 @@ def _write_dc_matrix_excel(path, rows_data, years):
     for r in rows_data:
         row = {
             "Empreendimento / Ponto": _excel_empreendimento_ponto(r),
+            "UF": r.get("uf") or "",
             "Protocolo": r.get("main_protocol") or "",
+            "Data de Entrada Acesso": _data_entrada_acesso_for_dc_row(r),
             "Data Solicitação": r.get("data_solicitacao") or "",
             "Entrada PL": r.get("data_entrada_pl") or "",
             "Prazo PL": r.get("prazo_analise_pl") or "",
@@ -499,6 +802,7 @@ def _write_dc_matrix_excel(path, rows_data, years):
             "Emissão Doc.": r.get("data_emissao_doc") or "",
             "Prazo CUST": r.get("prazo_cust") or "",
             "CUST": r.get("cust_label") or "",
+            "Data assinatura CUST": r.get("data_assinatura_cust") or "",
         }
         # Anos com Ponta e Fora Ponta
         for y in years:
@@ -553,7 +857,9 @@ def _write_dc_matrix_excel(path, rows_data, years):
             width = 12
             if header in ("Empreendimento", "Empreendimento / Ponto"):
                 width = 28
-            elif header in ("Protocolo", "CUST", "Status"):
+            elif header == "Data de Entrada Acesso":
+                width = 18
+            elif header in ("Protocolo", "CUST", "Status", "Data assinatura CUST"):
                 width = 18
             ws.column_dimensions[get_column_letter(col_idx)].width = width
             for cell in col:
@@ -581,7 +887,7 @@ def _write_dc_matrix_excel(path, rows_data, years):
                 width = 32
             elif header in ("Condicionantes / Obras", "SEP"):
                 width = 55
-            elif header in ("Protocolo", "Status Solicitação", "Viabilidade Resumo", "Viabilidade Ano", "Horizonte"):
+            elif header in ("Protocolo", "Status Solicitação", "Viabilidade Resumo", "Viabilidade Ano", "Horizonte", "Data assinatura CUST"):
                 width = 22
             elif header in ("MUST Ponta Solicitado", "MUST FP Solicitado", "Limitado Ponta", "Limitado FP"):
                 width = 18
@@ -592,11 +898,198 @@ def _write_dc_matrix_excel(path, rows_data, years):
                     cell.number_format = '#,##0.00'
 
 
+def _write_dcp_chart_excel(path, metadata_rows, data_rows, long_rows=None):
+    """Gera o Excel dos dados agregados do gráfico do Painel de Data Centers na Rede Básica."""
+    from openpyxl import Workbook
+    from openpyxl.chart import BarChart, Reference, Series
+    from openpyxl.chart.label import DataLabelList
+    from openpyxl.styles import Alignment, Font, PatternFill
+    from openpyxl.utils import get_column_letter
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Planilha1"
+
+    header_fill = PatternFill("solid", fgColor="2D5016")
+    header_font = Font(color="FFFFFF", bold=True)
+    section_fill = PatternFill("solid", fgColor="E8F5E0")
+    total_fill = PatternFill("solid", fgColor="F3F4F6")
+    center = Alignment(horizontal="center", vertical="center")
+
+    def _metadata_value(field):
+        for row in metadata_rows or []:
+            if row.get("Campo") == field:
+                return row.get("Valor")
+        return ""
+
+    def _safe_number(value):
+        if value in (None, ""):
+            return 0
+        try:
+            return float(value)
+        except Exception:
+            return value
+
+    def _write_context_sheet():
+        if not metadata_rows:
+            return
+        ws_ctx = wb.create_sheet("Contexto")
+        ws_ctx.append(["Campo", "Valor"])
+        for row in metadata_rows:
+            ws_ctx.append([row.get("Campo"), row.get("Valor")])
+        for cell in ws_ctx[1]:
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = center
+        ws_ctx.column_dimensions["A"].width = 24
+        ws_ctx.column_dimensions["B"].width = 56
+        for row in ws_ctx.iter_rows(min_row=2):
+            for cell in row:
+                cell.alignment = Alignment(vertical="top", wrap_text=True)
+
+    if not data_rows:
+        data_rows = [{"Mensagem": "Sem dados para o gráfico atual."}]
+
+    if "Ano" not in data_rows[0]:
+        headers = list(data_rows[0].keys())
+        for col_idx, header in enumerate(headers, start=1):
+            cell = ws.cell(row=1, column=col_idx, value=header)
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = center
+        for row_idx, row_data in enumerate(data_rows, start=2):
+            for col_idx, header in enumerate(headers, start=1):
+                cell = ws.cell(row=row_idx, column=col_idx, value=row_data.get(header))
+                cell.alignment = Alignment(vertical="top", wrap_text=True)
+                if isinstance(header, str) and ("MW" in header or header in ("Limite inferior MW", "Limite superior MW")):
+                    cell.number_format = '#,##0.00'
+        for col_idx, header in enumerate(headers, start=1):
+            width = 18 if isinstance(header, str) and "MW" in header else 16
+            if header in ("Mensagem", "Faixa"):
+                width = 28
+            ws.column_dimensions[get_column_letter(col_idx)].width = width
+        _write_context_sheet()
+        wb.save(path)
+        return
+
+    all_category_rows = [
+        ("CUST assinado", "CUST assinado MW", "CUST assinado Projetos", "14532D"),
+        ("Aprovados aptos a CUST", "Aprovados aptos a CUST MW", "Aprovados aptos a CUST Projetos", "22C55E"),
+        ("Aprovado", "Aprovado MW", "Aprovado Projetos", "22C55E"),
+        ("Em análise", "Em analise MW", "Em analise Projetos", "2563EB"),
+        ("Aprovados não contratados", "Aprovados não contratados MW", "Aprovados não contratados Projetos", "D97706"),
+        ("Inviável", "Inviavel MW", "Inviavel Projetos", "DC2626"),
+    ]
+    category_rows = [
+        item
+        for item in all_category_rows
+        if item[1] in data_rows[0] or item[2] in data_rows[0]
+    ]
+    headers = ["Ano"]
+    for _label, mw_key, projects_key, _color in category_rows:
+        headers.extend([mw_key, projects_key])
+    headers.extend(["Total MW", "Total Projetos"])
+    start_row = 3
+
+    for col_idx, header in enumerate(headers, start=1):
+        cell = ws.cell(row=start_row, column=col_idx, value=header)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = center
+
+    for row_idx, row_data in enumerate(data_rows, start=start_row + 1):
+        for col_idx, header in enumerate(headers, start=1):
+            value = row_data.get(header)
+            cell = ws.cell(row=row_idx, column=col_idx, value=value)
+            cell.alignment = center
+            if "MW" in header:
+                cell.number_format = '#,##0.00'
+            elif header == "Ano" or "Projetos" in header:
+                cell.number_format = '#,##0'
+
+    years = [row.get("Ano") for row in data_rows]
+    last_year_col = 1 + len(years)
+
+    def _write_chart_block(header_row, value_kind):
+        for idx, year in enumerate(years, start=2):
+            cell = ws.cell(row=header_row, column=idx, value=year)
+            cell.fill = section_fill
+            cell.font = Font(bold=True)
+            cell.alignment = center
+            cell.number_format = '#,##0'
+
+        for offset, (label, mw_key, projects_key, _color) in enumerate(category_rows, start=1):
+            row_idx = header_row + offset
+            ws.cell(row=row_idx, column=1, value=label)
+            ws.cell(row=row_idx, column=1).font = Font(bold=True)
+            for col_offset, source_row in enumerate(data_rows, start=2):
+                key = mw_key if value_kind == "mw" else projects_key
+                raw_value = _safe_number(source_row.get(key))
+                value = None if raw_value == 0 else raw_value
+                cell = ws.cell(row=row_idx, column=col_offset, value=value)
+                cell.alignment = center
+                cell.number_format = '#,##0.00' if value_kind == "mw" else '#,##0'
+
+        total_row = header_row + len(category_rows) + 2
+        ws.cell(row=total_row, column=1, value="Total")
+        ws.cell(row=total_row, column=1).font = Font(bold=True)
+        ws.cell(row=total_row, column=1).fill = total_fill
+        for col_idx in range(2, last_year_col + 1):
+            col_letter = get_column_letter(col_idx)
+            cell = ws.cell(row=total_row, column=col_idx, value=f"=SUM({col_letter}{header_row + 1}:{col_letter}{header_row + len(category_rows)})")
+            cell.fill = total_fill
+            cell.font = Font(bold=True)
+            cell.alignment = center
+            cell.number_format = '#,##0.00' if value_kind == "mw" else '#,##0'
+
+    _write_chart_block(15, "mw")
+    _write_chart_block(28, "projects")
+
+    for col_idx in range(1, len(headers) + 1):
+        ws.column_dimensions[get_column_letter(col_idx)].width = 18
+    ws.column_dimensions["A"].width = 16
+    ws.freeze_panes = "A4"
+    ws.auto_filter.ref = f"A{start_row}:{get_column_letter(len(headers))}{start_row + len(data_rows)}"
+
+    title = _metadata_value("Grafico") or "Montante Total de DCs"
+
+    def _add_chart(header_row, anchor, title_suffix, number_format):
+        chart = BarChart()
+        chart.type = "col"
+        chart.grouping = "stacked"
+        chart.overlap = 100
+        chart.title = f"{title} - {title_suffix}"
+        chart.y_axis.title = title_suffix
+        chart.x_axis.title = "Ano"
+        chart.height = 7.4
+        chart.width = 15.5
+        cats_ref = Reference(ws, min_col=2, max_col=last_year_col, min_row=header_row)
+        for offset, (_label, _mw_key, _projects_key, color) in enumerate(category_rows, start=1):
+            row_idx = header_row + offset
+            values_ref = Reference(ws, min_col=2, max_col=last_year_col, min_row=row_idx)
+            series = Series(values_ref, title=ws.cell(row=row_idx, column=1).value)
+            series.graphicalProperties.solidFill = color
+            series.graphicalProperties.line.solidFill = color
+            chart.series.append(series)
+        chart.set_categories(cats_ref)
+        chart.dataLabels = DataLabelList()
+        chart.dataLabels.showVal = True
+        chart.dataLabels.numFmt = number_format
+        ws.add_chart(chart, anchor)
+
+    _add_chart(15, "O3", "MW", '#,##0')
+    _add_chart(28, "O22", "Projetos", '#,##0')
+
+    _write_context_sheet()
+    wb.save(path)
+
+
 def _write_bd_entrada_excel(path, rows_data, viabilidades_existentes):
     """Gera o BD entrada multi-aba com aba 'Pontos' MESTRA.
 
     Estrutura:
-      - 'Pontos' (mestra): Protocolo, Ponto, Empreendimento, Rede, Tensão (kV), Viabilidade Geral
+      - 'Pontos' (mestra): Protocolo, Ponto, Empreendimento, Rede, Tensão (kV),
+        Viabilidade Geral, Relação Protocolo Revisado, UF
       - Abas auxiliares por ano: Viabilidade, Condicionantes, SEP, Limitado Ponta, Limitado FP,
         MUST Ponta (PTDis), MUST FP (PTDis)
     """
@@ -650,7 +1143,7 @@ def _write_bd_entrada_excel(path, rows_data, viabilidades_existentes):
     wb.remove(wb.active)
 
     ws_pontos = wb.create_sheet("Pontos")
-    headers_pontos = ["Protocolo", "Ponto", "Empreendimento", "Rede", "Tensão (kV)", "Viabilidade Geral", "Relação Protocolo Revisado"]
+    headers_pontos = ["Protocolo", "Ponto", "Empreendimento", "Rede", "Tensão (kV)", "Viabilidade Geral", "Relação Protocolo Revisado", "UF"]
     ws_pontos.append(headers_pontos)
     for col_idx, h in enumerate(headers_pontos, start=1):
         c = ws_pontos.cell(row=1, column=col_idx)
@@ -668,6 +1161,7 @@ def _write_bd_entrada_excel(path, rows_data, viabilidades_existentes):
             r.get("tensao", ""),
             entry.get("viabilidade_geral", ""),
             entry.get("relacao_protocolo_revisado", ""),
+            _excel_clean(entry.get("uf") or r.get("uf", "")),
         ])
 
     last_row = ws_pontos.max_row
@@ -681,8 +1175,14 @@ def _write_bd_entrada_excel(path, rows_data, viabilidades_existentes):
     if last_row >= 2:
         dv_rede.add(f"D2:D{last_row}")
 
+    dv_uf = DataValidation(type="list", formula1=f'"{",".join(sorted(UF_MAP))}"', allow_blank=True)
+    ws_pontos.add_data_validation(dv_uf)
+    if last_row >= 2:
+        dv_uf.add(f"H2:H{last_row}")
+
     widths_pontos = {"Protocolo": 22, "Ponto": 35, "Empreendimento": 32, "Rede": 8,
-                     "Tensão (kV)": 12, "Viabilidade Geral": 24, "Relação Protocolo Revisado": 28}
+                     "Tensão (kV)": 12, "Viabilidade Geral": 24, "Relação Protocolo Revisado": 28,
+                     "UF": 8}
     for col_idx, h in enumerate(headers_pontos, start=1):
         ws_pontos.column_dimensions[get_column_letter(col_idx)].width = widths_pontos.get(h, 14)
     ws_pontos.freeze_panes = "C2"
@@ -738,7 +1238,8 @@ def _write_bd_entrada_excel(path, rows_data, viabilidades_existentes):
         ["BD Entrada — Estrutura"], [""],
         ["📌 Para CADASTRAR novo ponto, edite APENAS a aba 'Pontos'."],
         ["📌 Para SAM com vários pontos, repita o protocolo e varie 'Ponto'."],
-        ["📌 Para RPA de revisão, preencha 'Relação Protocolo Revisado' com o SPA original."],
+        ["📌 Para cadastrar uma revisão de montante, preencha 'Relação Protocolo Revisado' com o protocolo do projeto original."],
+        ["📌 Preencha 'UF' na aba 'Pontos' com a sigla do estado do protocolo."],
         ["📌 Nas abas de detalhe, edite apenas as colunas Y2024, Y2025, ..."],
         [""],
         ["Valores aceitos para Viabilidade:"],
@@ -762,9 +1263,9 @@ def server(input: Inputs, output: Outputs, session: Session):
     selected_proto = reactive.value(None)
     point_idx = reactive.value(0)
     selected_dc = reactive.value(None)
-    dc_panel_state = reactive.value("")
+    dc_panel_state = reactive.value(tuple())
     dc_panel_metric = reactive.value("mw")
-    dc_panel_chart_type = reactive.value("received")
+    dc_panel_chart_type = reactive.value("possible")
     dc_status_filter = reactive.value("todos")
     overview_matrix_rows_cache = reactive.value([])
     overview_emitido_pl_filter = reactive.value("")  # "" | "nao" | "sim"
@@ -791,10 +1292,39 @@ def server(input: Inputs, output: Outputs, session: Session):
         """
         ui.insert_ui(ui.tags.script(script), selector="body", where="beforeEnd")
 
+    def _dcp_state_values(value):
+        if value is None:
+            raw_values = []
+        elif isinstance(value, (list, tuple, set)):
+            raw_values = list(value)
+        else:
+            raw_values = [value]
+        selected = {
+            str(v or "").strip().upper()
+            for v in raw_values
+            if str(v or "").strip().upper() in UF_MAP
+        }
+        return [uf for uf in UF_MAP if uf in selected]
+
+    def _dcp_selected_states():
+        return _dcp_state_values(dc_panel_state.get())
+
+    def _dcp_state_short_label(value, default="RB"):
+        states = _dcp_state_values(value)
+        return "/".join(states) if states else default
+
+    def _dcp_state_title(value):
+        states = _dcp_state_values(value)
+        if not states:
+            return "Todos os estados"
+        if len(states) == 1:
+            uf = states[0]
+            return f"{UF_MAP.get(uf, uf)} ({uf})"
+        return f"{len(states)} estados selecionados: {'/'.join(states)}"
+
     # --- Populate local filter choices for Visão Geral on startup ---
     @reactive.effect
     def _init_filters():
-        ufs = {}
         redes = {}
         tensoes = {}
         statuses = {}
@@ -803,11 +1333,6 @@ def server(input: Inputs, output: Outputs, session: Session):
 
         for p in OVERVIEW_PROTOCOLS:
             info = _overview_row_info(p)
-
-            uf = info.get("uf")
-            if uf and uf != "—":
-                nome_uf = UF_MAP.get(uf, uf)
-                ufs[uf] = f"{uf} — {nome_uf}"
 
             rede = info.get("rede")
             if rede and rede != "—":
@@ -836,7 +1361,6 @@ def server(input: Inputs, output: Outputs, session: Session):
             except Exception:
                 return 0.0
 
-        ui.update_selectize("filter_uf", choices=dict(sorted(ufs.items())), selected=[])
         ui.update_selectize("filter_rede", choices=dict(sorted(redes.items())), selected=[])
         ui.update_selectize("filter_tensao", choices=dict(sorted(tensoes.items(), key=_sort_kv)), selected=[])
         ui.update_selectize("filter_status", choices=dict(sorted(statuses.items())), selected=[])
@@ -885,7 +1409,6 @@ def server(input: Inputs, output: Outputs, session: Session):
         except Exception:
             f_conexao = ""
 
-        f_ufs = _as_list(input.filter_uf())
         f_redes = _as_list(input.filter_rede())
         f_tensoes = _as_list(input.filter_tensao())
         f_statuses = _as_list(input.filter_status())
@@ -909,8 +1432,6 @@ def server(input: Inputs, output: Outputs, session: Session):
             if f_proto and not _contains(info.get("protocolo"), f_proto):
                 continue
             if f_conexao and not _contains(info.get("conexao"), f_conexao):
-                continue
-            if f_ufs and info.get("uf") not in f_ufs:
                 continue
             if f_redes and info.get("rede") not in f_redes:
                 continue
@@ -1080,12 +1601,14 @@ def server(input: Inputs, output: Outputs, session: Session):
         ui.update_text("dc_empr", value="")
         ui.update_text("dc_proto", value="")
         ui.update_text("dc_conexao", value="")
+        ui.update_selectize("dc_uf", selected=["SP"] if "SP" in _dc_ufs else [])
         ui.update_selectize("dc_rede", selected=[])
         ui.update_selectize("dc_kv", selected=[])
         ui.update_selectize("dc_viab", selected=[])
         ui.update_selectize("dc_status", selected=[])
         ui.update_select("dc_sort", selected="data_asc")
         dc_emitido_pl_filter.set("")
+        dc_status_filter.set("todos")
 
     @reactive.effect
     @reactive.event(input.dcm_reset)
@@ -1093,6 +1616,7 @@ def server(input: Inputs, output: Outputs, session: Session):
         ui.update_text("dcm_empr", value="")
         ui.update_text("dcm_proto", value="")
         ui.update_text("dcm_conexao", value="")
+        ui.update_selectize("dcm_uf", selected=["SP"] if "SP" in _dc_ufs else [])
         ui.update_selectize("dcm_rede", selected=[])
         ui.update_selectize("dcm_kv", selected=[])
         ui.update_selectize("dcm_viab", selected=[])
@@ -1105,18 +1629,22 @@ def server(input: Inputs, output: Outputs, session: Session):
     def _():
         years = _dcp_horizon_years()
         ui.update_selectize("dcp_period_years", selected=[str(y) for y in years])
-        ui.update_slider("dcp_raw_period", value=(2024, 2033))
         ui.update_select("dcp_year", selected="latest")
-        dc_panel_state.set("")
+        dc_panel_state.set(tuple())
 
     @reactive.effect
     @reactive.event(input.dcp_state_click)
     def _toggle_dc_panel_state():
         uf = str(input.dcp_state_click() or "").strip().upper()
-        if not uf or uf == dc_panel_state.get():
-            dc_panel_state.set("")
+        if not uf or uf == "__CLEAR__":
+            dc_panel_state.set(tuple())
         elif uf in UF_MAP:
-            dc_panel_state.set(uf)
+            selected = set(_dcp_selected_states())
+            if uf in selected:
+                selected.remove(uf)
+            else:
+                selected.add(uf)
+            dc_panel_state.set(tuple(state for state in UF_MAP if state in selected))
 
     @reactive.effect
     @reactive.event(input.dcp_metric)
@@ -1129,7 +1657,7 @@ def server(input: Inputs, output: Outputs, session: Session):
     @reactive.event(input.dcp_chart_type)
     def _toggle_dc_panel_chart_type():
         chart_type = str(input.dcp_chart_type() or "").strip()
-        if chart_type in ("received", "possible", "raw", "power_band", "power_band_requests"):
+        if chart_type in ("received", "received_requests", "possible", "summary", "power_band", "power_band_total", "power_band_valid", "power_band_requests"):
             dc_panel_chart_type.set(chart_type)
 
     @reactive.effect
@@ -1150,7 +1678,6 @@ def server(input: Inputs, output: Outputs, session: Session):
     def _reset_filters():
         ui.update_text("filter_nome", value="")
         ui.update_text("filter_protocolo", value="")
-        ui.update_selectize("filter_uf", selected=[])
         ui.update_selectize("filter_rede", selected=[])
         ui.update_selectize("filter_tensao", selected=[])
         ui.update_text("filter_conexao", value="")
@@ -1243,6 +1770,7 @@ def server(input: Inputs, output: Outputs, session: Session):
             "ptdis": "cust-pill cust-ptdis",
             "inviavel": "cust-pill cust-inviavel",
             "verificar": "cust-pill cust-verificar",
+            "anulado": "cust-pill cust-anulado",
         }.get(cust_status_v, "cust-pill")
 
         nome = info.get("nome") or "—"
@@ -1265,6 +1793,7 @@ def server(input: Inputs, output: Outputs, session: Session):
             tags.td(info.get("data_emissao_doc") or "—", class_="date-cell", style="text-align:center;"),
             tags.td(info.get("prazo_cust") or "—", class_="date-cell", style="text-align:center;"),
             tags.td(tags.span(cust_label, class_=cust_pill_class), style="text-align:center;"),
+            tags.td(info.get("data_assinatura_cust") or "—", class_="date-cell", style="text-align:center;"),
             tags.td(tags.span(viab, class_=_overview_viab_pill_class(viab)), style="text-align:center;"),
             **{"data-proto": proto},
         )
@@ -1367,6 +1896,7 @@ def server(input: Inputs, output: Outputs, session: Session):
                             tags.th("Emissão Doc.", style="text-align:center; font-size:10px;", title="Data real da emissão do documento"),
                             tags.th("Prazo CUST", style="text-align:center; font-size:10px;", title="Data limite para assinatura do CUST"),
                             tags.th("CUST", style="text-align:center; font-size:10px;"),
+                            tags.th("Assinatura CUST", style="text-align:center; font-size:10px;", title="Data de assinatura em bdt.tb_contrato.dat_assinatura"),
                             tags.th("Viabilidade", style="text-align:center;", title="inbound.sgacesso.tb_solicitacao.id_viabilidade"),
                         )
                     ),
@@ -1549,6 +2079,12 @@ def server(input: Inputs, output: Outputs, session: Session):
                     row["overview_point_key"] = point["key"]
                     row["year_values"] = yv
                     row["year_status"] = ys
+                    row["data_entrada_acesso"] = _data_entrada_acesso_for_protocol(
+                        proto,
+                        info.get("data_solicitacao_year"),
+                        point["key"],
+                        yv,
+                    )
                     rows.append(row)
             else:
                 point_key = points[0]["key"] if points else None
@@ -1559,6 +2095,12 @@ def server(input: Inputs, output: Outputs, session: Session):
                     row["overview_point_key"] = point_key
                 row["year_values"] = yv
                 row["year_status"] = ys
+                row["data_entrada_acesso"] = _data_entrada_acesso_for_protocol(
+                    proto,
+                    info.get("data_solicitacao_year"),
+                    point_key,
+                    yv,
+                )
                 rows.append(row)
         return rows
 
@@ -1609,6 +2151,7 @@ def server(input: Inputs, output: Outputs, session: Session):
         return tags.tr(
             tags.td(tags.div(r.get("nome") or "—", class_="dc-empr-name", title=r.get("nome") or "—")),
             tags.td(r.get("protocolo") or "—", style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--green-dark); font-weight:600; text-align:center;"),
+            tags.td(r.get("data_entrada_acesso") or "—", class_="date-cell matrix-access-entry-col", style="text-align:center;"),
             tags.td(r.get("conexao") or "—", class_="overview-matrix-conexao", title=r.get("conexao") or "—"),
             tags.td("⋯", class_="matrix-toggle-spacer", title="Colunas agrupadas"),
             tags.td(r.get("uf") or "—", class_="matrix-collapsible-col", style="text-align:center; font-weight:700; color:var(--text-mid);"),
@@ -1629,6 +2172,7 @@ def server(input: Inputs, output: Outputs, session: Session):
             row = {
                 "Solicitação": r.get("nome") or "",
                 "Protocolo": r.get("protocolo") or "",
+                "Data de Entrada Acesso": r.get("data_entrada_acesso") or "",
                 "Conexão": r.get("conexao") or "",
                 "UF": r.get("uf") or "",
                 "Data Solic.": r.get("data_solicitacao") or "",
@@ -1664,6 +2208,8 @@ def server(input: Inputs, output: Outputs, session: Session):
                 width = 12
                 if header in ("Solicitação", "Conexão"):
                     width = 34
+                elif header == "Data de Entrada Acesso":
+                    width = 18
                 elif header in ("Protocolo", "Status", "Viabilidade"):
                     width = 20
                 ws.column_dimensions[get_column_letter(col_idx)].width = width
@@ -1712,6 +2258,7 @@ def server(input: Inputs, output: Outputs, session: Session):
                             tags.tr(
                                 tags.th("Solicitação", rowspan="2"),
                                 tags.th("Protocolo", style="text-align:center;", rowspan="2"),
+                                tags.th("Data de Entrada Acesso", class_="matrix-access-entry-col", style="text-align:center;", rowspan="2"),
                                 tags.th("Conexão", style="text-align:center;", rowspan="2"),
                                 tags.th(
                                     tags.button("▸ Dados", type="button", class_="matrix-toggle-btn js-matrix-toggle", title="Expandir/retrair colunas entre Protocolo e os anos"),
@@ -1851,6 +2398,9 @@ def server(input: Inputs, output: Outputs, session: Session):
         set(r["tensao"] for r in DATACENTER_ROWS if r.get("tensao") and r["tensao"] != "—"),
         key=lambda x: int(str(x).split(".")[0]) if str(x).replace(".", "").isdigit() else 0,
     )
+    _dc_ufs = sorted(
+        set(str(r.get("uf") or "").upper() for r in DATACENTER_ROWS if str(r.get("uf") or "").upper() in UF_MAP)
+    )
     _dc_total = len(DATACENTER_ROWS)
     _dc_encontrados = sum(1 for r in DATACENTER_ROWS if r["origem"] != "Não encontrado")
     _dc_com_must = sum(1 for r in DATACENTER_ROWS if "MUST" in r["origem"])
@@ -1884,11 +2434,14 @@ def server(input: Inputs, output: Outputs, session: Session):
 
     @reactive.effect
     def _init_dc_sidebar_filters():
+        uf_choices = {uf: f"{uf} — {UF_MAP.get(uf, uf)}" for uf in _dc_ufs}
         rede_choices = {r: r for r in _dc_redes}
         kv_choices = {str(k): str(k) for k in _dc_kvs}
         viab_choices = {v: v for v in _dc_viabilidades}
         status_choices = {s: s for s in _dc_statuses}
+        selected_uf = ["SP"] if "SP" in uf_choices else []
         for prefix in ("dc", "dcm"):
+            ui.update_selectize(f"{prefix}_uf", choices=uf_choices, selected=selected_uf)
             ui.update_selectize(f"{prefix}_rede", choices=rede_choices, selected=[])
             ui.update_selectize(f"{prefix}_kv", choices=kv_choices, selected=[])
             ui.update_selectize(f"{prefix}_viab", choices=viab_choices, selected=[])
@@ -1899,10 +2452,17 @@ def server(input: Inputs, output: Outputs, session: Session):
         dcp_year_choices = {"latest": "Último ano do horizonte"}
         dcp_year_choices.update({str(y): str(y) for y in dcp_reference_years})
         ui.update_selectize("dcp_period_years", choices={str(y): str(y) for y in dcp_years}, selected=[str(y) for y in dcp_years])
-        ui.update_slider("dcp_raw_period", value=(2024, 2033))
         ui.update_select("dcp_year", choices=dcp_year_choices, selected="latest")
 
-    def _dc_filtered_rows():
+    def _as_filter_list(value, default=None):
+        if value is None:
+            return list(default or [])
+        if isinstance(value, (list, tuple, set)):
+            return [str(v) for v in value if str(v).strip()]
+        text = str(value).strip()
+        return [text] if text else []
+
+    def _dc_filtered_rows(apply_status_chip=True):
         """Aplica todos os filtros e ordena. Usado pela lista e pela matriz."""
         try:
             f_empr = (input.dc_empr() or "").strip().lower()
@@ -1917,19 +2477,23 @@ def server(input: Inputs, output: Outputs, session: Session):
         except Exception:
             f_proto = ""
         try:
-            f_rede = list(input.dc_rede() or [])
+            f_uf = _as_filter_list(input.dc_uf(), default=(["SP"] if "SP" in _dc_ufs else []))
+        except Exception:
+            f_uf = ["SP"] if "SP" in _dc_ufs else []
+        try:
+            f_rede = _as_filter_list(input.dc_rede())
         except Exception:
             f_rede = []
         try:
-            f_kv = list(input.dc_kv() or [])
+            f_kv = _as_filter_list(input.dc_kv())
         except Exception:
             f_kv = []
         try:
-            f_viab = list(input.dc_viab() or [])
+            f_viab = _as_filter_list(input.dc_viab())
         except Exception:
             f_viab = []
         try:
-            f_status_select = list(input.dc_status() or [])
+            f_status_select = _as_filter_list(input.dc_status())
         except Exception:
             f_status_select = []
         f_status = dc_status_filter.get()
@@ -1962,6 +2526,8 @@ def server(input: Inputs, output: Outputs, session: Session):
                 continue
             if f_conexao and f_conexao not in str(r.get("conexao", "")).lower():
                 continue
+            if f_uf and str(r.get("uf") or "").upper() not in f_uf:
+                continue
             if f_rede and r.get("rede") not in f_rede:
                 continue
             if f_kv and str(r.get("tensao", "")) not in f_kv:
@@ -1972,7 +2538,7 @@ def server(input: Inputs, output: Outputs, session: Session):
                 continue
             if f_emitido_pl and _emitido_pl_state(r.get("data_emissao_pl")) != f_emitido_pl:
                 continue
-            if f_status and f_status != "todos":
+            if apply_status_chip and f_status and f_status != "todos":
                 cat = _classify_status_card(r.get("status"))
                 if f_status == "emitidos" and cat != "emitido":
                     continue
@@ -2075,11 +2641,11 @@ def server(input: Inputs, output: Outputs, session: Session):
             return "viab-pill viab-cancelada"
         if v == "Anulada":
             return "viab-pill viab-anulada"
-        if v == "Inviável":
+        if v == "Inviável" or "negad" in v_low:
             return "viab-pill viab-inviavel"
         if "Limitado" in v:
             return "viab-pill viab-limitado"
-        if "Condicionado" in v:
+        if "Condicionado" in v or "restri" in v_low or "parcial" in v_low:
             return "viab-pill viab-condicionado"
         if v == "Em análise":
             return "viab-pill viab-pendente"
@@ -2129,40 +2695,19 @@ def server(input: Inputs, output: Outputs, session: Session):
             "ptdis": "cust-pill cust-ptdis",
             "inviavel": "cust-pill cust-inviavel",
             "verificar": "cust-pill cust-verificar",
+            "anulado": "cust-pill cust-anulado",
         }.get(cust_status_v, "cust-pill")
 
         # Pill de viabilidade
         viab = r.get("viabilidade_resumo") or "Pendente"
         viab_pill_class = _viab_pill_class(viab)
 
-        # Empreendimento + ponto (se SAM com múltiplos pontos)
-        ponto_label = r.get("ponto_label") or ""
-        empr_main = (r.get("empreendimento") or "").strip()
-        proto_text = r.get("main_protocol") or ""
-        is_sam = "SAM" in proto_text.upper()
-        # Para SAM: usar APENAS o ponto de contratação (ignora empreendimento)
-        if is_sam:
-            display_text = ponto_label or r.get("ponto_instalacao") or empr_main or "—"
-            empr_cell = tags.div(display_text, class_="dc-empr-name", title=display_text)
-            cell_title = display_text
-        elif empr_main and ponto_label and ponto_label != empr_main:
-            empr_cell = tags.div(
-                tags.div(empr_main, class_="dc-empr-name"),
-                tags.div(ponto_label, class_="dc-ponto-label"),
-            )
-            cell_title = empr_main
-        elif empr_main:
-            empr_cell = tags.div(empr_main, class_="dc-empr-name", title=empr_main)
-            cell_title = empr_main
-        elif ponto_label:
-            empr_cell = tags.div(ponto_label, class_="dc-empr-name", title=ponto_label)
-            cell_title = ponto_label
-        else:
-            empr_cell = tags.div("—", class_="dc-empr-name")
-            cell_title = ""
+        empr_cell, cell_title = _dc_empreendimento_cell(r)
 
         return tags.tr(
             tags.td(empr_cell, title=cell_title),
+            tags.td(r.get("uf") or "—",
+                    style="text-align:center; font-weight:700; color:var(--text-mid);"),
             tags.td(r["main_protocol"] or "—",
                     style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--green-dark); font-weight:600; text-align:center;"),
             tags.td(r.get("data_solicitacao") or "—",
@@ -2189,6 +2734,8 @@ def server(input: Inputs, output: Outputs, session: Session):
             tags.td(r.get("prazo_cust") or "—",
                     class_="date-cell", style="text-align:center;"),
             tags.td(tags.span(cust_label, class_=cust_pill_class), style="text-align:center;"),
+            tags.td(r.get("data_assinatura_cust") or "—",
+                    class_="date-cell", style="text-align:center;"),
             tags.td(tags.span(viab, class_=viab_pill_class), style="text-align:center;"),
             **{"data-dc": str(r["item"]), "data-ponto-idx": str(r.get("ponto_idx", 0))},
         )
@@ -2306,18 +2853,21 @@ def server(input: Inputs, output: Outputs, session: Session):
             return None
         return original
 
+    def _dcp_status_is_active(r):
+        return _classify_status_card(r.get("status")) != "cancelado"
+
     def _dcp_is_panel_spa_row(r):
         return (
             r.get("rede") == "RB"
             and _protocol_type(r.get("main_protocol")) == "SPA"
-            and _classify_status_card(r.get("status")) != "cancelado"
+            and _dcp_status_is_active(r)
         )
 
     def _dcp_is_panel_revision_row(r):
         return (
             r.get("rede") == "RB"
             and _protocol_type(r.get("main_protocol")) == "RPA"
-            and _classify_status_card(r.get("status")) != "cancelado"
+            and _dcp_status_is_active(r)
             and _dcp_revision_original_row(r) is not None
         )
 
@@ -2361,10 +2911,17 @@ def server(input: Inputs, output: Outputs, session: Session):
             return 0.0
         return _dcp_requested_year_mw(r, source_year)
 
+    def _dcp_revision_uses_original_base(original, year, raw=False):
+        if original is None:
+            return False
+        return _dcp_effective_category(original, year, raw=raw) in {"cust", "aprovado"}
+
     def _dcp_panel_mw(r, year):
         mw = _dcp_year_mw(r, year)
         original = _dcp_revision_original_row(r)
         if original is None:
+            return mw
+        if not _dcp_revision_uses_original_base(original, year):
             return mw
         return max(0.0, mw - _dcp_year_mw(original, year))
 
@@ -2372,6 +2929,8 @@ def server(input: Inputs, output: Outputs, session: Session):
         mw = _dcp_raw_year_mw(r, year)
         original = _dcp_revision_original_row(r)
         if original is None:
+            return mw
+        if not _dcp_revision_uses_original_base(original, year, raw=True):
             return mw
         return max(0.0, mw - _dcp_raw_year_mw(original, year))
 
@@ -2404,21 +2963,6 @@ def server(input: Inputs, output: Outputs, session: Session):
         selected = [y for y in selected if y in available]
         return selected or available
 
-    def _dcp_raw_period_years():
-        try:
-            raw = list(input.dcp_raw_period() or [])
-        except Exception:
-            raw = [2024, 2033]
-        try:
-            start, end = int(raw[0]), int(raw[-1])
-        except Exception:
-            start, end = 2024, 2033
-        start = max(2024, min(2033, start))
-        end = max(2024, min(2033, end))
-        if start > end:
-            start, end = end, start
-        return list(range(start, end + 1))
-
     def _dcp_reference_year():
         years = _dcp_contract_horizon_years()
         try:
@@ -2433,13 +2977,18 @@ def server(input: Inputs, output: Outputs, session: Session):
         return max(years) if years else None
 
     def _dcp_base_rows(include_state=True):
-        selected_uf = dc_panel_state.get() if include_state else ""
+        selected_states = _dcp_selected_states() if include_state else []
         rows = [r for r in DATACENTER_ROWS if _dcp_is_panel_row(r)]
-        if selected_uf:
-            rows = [r for r in rows if str(r.get("uf") or "").upper() == selected_uf]
+        if selected_states:
+            selected_set = set(selected_states)
+            rows = [r for r in rows if str(r.get("uf") or "").upper() in selected_set]
         return rows
 
     def _dcp_year_viab(r, year):
+        if str(r.get("uf") or "").upper() != "SP":
+            resumo = str(r.get("viabilidade_resumo") or "").strip()
+            if resumo:
+                return resumo
         source_year = _dcp_panel_value_source_year(r, year)
         if source_year is not None:
             year = source_year
@@ -2454,6 +3003,10 @@ def server(input: Inputs, output: Outputs, session: Session):
         )
 
     def _dcp_raw_year_viab(r, year):
+        if str(r.get("uf") or "").upper() != "SP":
+            resumo = str(r.get("viabilidade_resumo") or "").strip()
+            if resumo:
+                return resumo
         source_year = _dcp_raw_value_source_year(r, year)
         if source_year is not None:
             year = source_year
@@ -2467,32 +3020,89 @@ def server(input: Inputs, output: Outputs, session: Session):
             or "Em análise"
         )
 
+    _DCP_CATEGORY_KEYS = ("cust", "aprovado", "analise", "anulado", "inviavel")
+    _DCP_STACK_KEYS = ("cust", "aprovado", "analise", "anulado", "inviavel")
+    _DCP_POSSIBLE_KEYS = ("cust", "aprovado", "analise")
+    _DCP_SUMMARY_KEYS = ("aprovado", "analise", "inviavel")
+
+    def _dcp_empty_category_acc():
+        acc = {key: 0.0 for key in _DCP_CATEGORY_KEYS}
+        acc["projetos"] = 0
+        for key in _DCP_CATEGORY_KEYS:
+            acc[f"{key}_projetos"] = 0
+        return acc
+
     def _dcp_viab_category(viab):
         text = str(viab or "").strip().lower()
-        if "anul" in text or "misto" in text or "mista" in text:
-            return "aprovado"
+        if "anul" in text:
+            return "anulado"
         if "invi" in text or "não vi" in text or "nao vi" in text or "negad" in text or "cancel" in text:
             return "inviavel"
-        if "viável" in text or "viavel" in text or "condicionado" in text or "limitado" in text:
+        if "viável" in text or "viavel" in text or "condicionado" in text or "limitado" in text or "misto" in text or "mista" in text:
             return "aprovado"
         return "analise"
 
+    def _dcp_has_date(value):
+        text = str(value or "").strip()
+        if text in ("", "—", "-", "None", "nan", "NaT", "NULL"):
+            return False
+        return pd.notna(pd.to_datetime(text, dayfirst=True, errors="coerce"))
+
+    def _dcp_cust_allows_possible(r):
+        status = str(r.get("cust_status") or "").strip()
+        if status in {"assinado", "no_prazo"}:
+            return True
+
+        # Fora de SP, a viabilidade pode ser informada pela planilha após emissão PL.
+        # Se o documento ONS ainda não foi emitido, o prazo de CUST ainda não começou.
+        if (
+            str(r.get("uf") or "").upper() != "SP"
+            and not _dcp_has_date(r.get("data_emissao_doc"))
+            and not _dcp_has_date(r.get("prazo_cust"))
+        ):
+            return True
+
+        return False
+
+    def _dcp_effective_category(r, year, raw=False):
+        if _classify_status_card(r.get("status")) == "anulado":
+            return "anulado"
+        viab = _dcp_raw_year_viab(r, year) if raw else _dcp_year_viab(r, year)
+        category = _dcp_viab_category(viab)
+        if category != "aprovado":
+            return category
+        if str(r.get("cust_status") or "").strip() == "assinado":
+            return "cust"
+        if _dcp_cust_allows_possible(r):
+            return "aprovado"
+        return "anulado"
+
+    def _dcp_summary_category(r, year, raw=False):
+        category = _dcp_effective_category(r, year, raw=raw)
+        if category in {"cust", "aprovado", "anulado"}:
+            return "aprovado"
+        if category == "inviavel":
+            return "inviavel"
+        return "analise"
+
     def _dcp_track_project(project_mw, r, category, mw):
+        # Projetos contam apenas solicitações originais; revisões afetam MW, não o número de projetos.
+        if not _dcp_is_panel_spa_row(r):
+            return
         key = _dcp_project_key(r)
         if not key or not _dcp_num(mw):
             return
-        buckets = project_mw.setdefault(key, {"aprovado": 0.0, "inviavel": 0.0, "analise": 0.0, "anulado": 0.0})
+        buckets = project_mw.setdefault(key, {cat: 0.0 for cat in _DCP_CATEGORY_KEYS})
         buckets[category] = buckets.get(category, 0.0) + _dcp_num(mw)
 
     def _dcp_apply_project_counts(acc, project_mw):
-        priority = {"aprovado": 1, "analise": 2, "inviavel": 3, "anulado": 0}
-        categories = ("aprovado", "inviavel", "analise", "anulado")
+        priority = {"cust": 4, "aprovado": 3, "analise": 2, "anulado": 1, "inviavel": 0}
         acc["projetos"] = 0
-        for key in categories:
+        for key in _DCP_CATEGORY_KEYS:
             acc[f"{key}_projetos"] = 0
         for buckets in project_mw.values():
             category = max(
-                categories,
+                _DCP_CATEGORY_KEYS,
                 key=lambda k: (buckets.get(k, 0.0), priority.get(k, 0)),
             )
             if buckets.get(category, 0.0) <= 0:
@@ -2501,32 +3111,28 @@ def server(input: Inputs, output: Outputs, session: Session):
             acc[f"{category}_projetos"] += 1
 
     def _dcp_aggregate_year(rows, year):
-        acc = {
-            "aprovado": 0.0,
-            "inviavel": 0.0,
-            "analise": 0.0,
-            "anulado": 0.0,
-            "projetos": 0,
-            "aprovado_projetos": 0,
-            "inviavel_projetos": 0,
-            "analise_projetos": 0,
-            "anulado_projetos": 0,
-        }
+        acc = _dcp_empty_category_acc()
         if year is None:
             return acc
         project_mw = {}
         for r in rows:
-            category = _dcp_viab_category(_dcp_year_viab(r, year))
+            category = _dcp_effective_category(r, year)
             mw = _dcp_panel_mw(r, year)
             if mw:
                 acc[category] += mw
-            project_category = _dcp_viab_category(_dcp_raw_year_viab(r, year))
+            project_category = _dcp_effective_category(r, year, raw=True)
             _dcp_track_project(project_mw, r, project_category, _dcp_raw_panel_mw(r, year))
         _dcp_apply_project_counts(acc, project_mw)
         return acc
 
     def _dcp_total(acc):
-        return acc.get("aprovado", 0.0) + acc.get("inviavel", 0.0) + acc.get("analise", 0.0) + acc.get("anulado", 0.0)
+        return sum(acc.get(key, 0.0) for key in _DCP_CATEGORY_KEYS)
+
+    def _dcp_total_aprovado(acc):
+        return acc.get("cust", 0.0) + acc.get("aprovado", 0.0) + acc.get("anulado", 0.0)
+
+    def _dcp_total_aprovado_valido(acc):
+        return acc.get("cust", 0.0) + acc.get("aprovado", 0.0)
 
     def _dcp_year_series(rows, years):
         return [
@@ -2539,15 +3145,127 @@ def server(input: Inputs, output: Outputs, session: Session):
             return 50
         return int(((mw - 1e-9) // 50 + 1) * 50)
 
-    def _dcp_power_band_series(rows, year, distinct_revisions=False):
-        if distinct_revisions:
-            values = [max(0.0, _dcp_raw_panel_mw(r, year)) for r in rows]
-        else:
-            values = [
-                max(0.0, _dcp_raw_year_mw(r, year))
-                for r in rows
-                if _protocol_type(r.get("main_protocol")) == "SPA"
+    def _dcp_power_band_label(lower, upper):
+        return f"[{lower}, {upper}]" if lower == 0 else f"({lower}, {upper}]"
+
+    def _dcp_power_band_contains(band, mw):
+        lower = band["lower"]
+        upper = band["upper"]
+        if lower == 0:
+            return 0 <= mw <= upper
+        return lower < mw <= upper
+
+    def _dcp_compact_power_bands(bands, max_groups=11):
+        active_bands = [band for band in bands if band["count"] > 0]
+        if len(active_bands) <= max_groups:
+            return active_bands
+
+        compacted = []
+        merged_450_600 = {"lower": 450, "upper": 600, "count": 0}
+        for band in bands:
+            lower = band["lower"]
+            if 450 <= lower < 600:
+                merged_450_600["count"] += band["count"]
+            elif band["count"] > 0:
+                compacted.append(dict(band))
+        if merged_450_600["count"] > 0:
+            compacted.append(merged_450_600)
+        compacted = sorted(compacted, key=lambda band: band["lower"])
+
+        while len(compacted) > max_groups:
+            last = compacted.pop()
+            previous = compacted.pop()
+            compacted.append({
+                "lower": previous["lower"],
+                "upper": last["upper"],
+                "count": previous["count"] + last["count"],
+            })
+        return compacted
+
+    def _dcp_power_band_project_records(rows, year, mode="total"):
+        projects = {}
+        if year is None:
+            return []
+        original_categories = {}
+        for r in rows:
+            key = _dcp_project_key(r)
+            if key and _dcp_is_panel_spa_row(r):
+                original_categories[key] = _dcp_effective_category(r, year)
+        replacement_categories = {}
+        replacement_project_keys = set()
+        for r in rows:
+            key = _dcp_project_key(r)
+            if not key or not _dcp_is_panel_revision_row(r) or not _dcp_year_mw(r, year):
+                continue
+            original = _dcp_revision_original_row(r)
+            if original is not None and not _dcp_revision_uses_original_base(original, year):
+                replacement_project_keys.add(key)
+                replacement_categories[key] = _dcp_effective_category(r, year)
+        for r in rows:
+            key = _dcp_project_key(r)
+            if (
+                key
+                and _dcp_is_panel_revision_row(r)
+                and _dcp_year_mw(r, year)
+                and _dcp_effective_category(r, year) == "analise"
+            ):
+                # Nos gráficos de faixa, uma revisão em análise deixa o projeto em análise.
+                original_categories[key] = "analise"
+
+        valid_project_keys = None
+        if mode == "valid":
+            valid_project_keys = set()
+            for r in rows:
+                key = _dcp_project_key(r)
+                if not key:
+                    continue
+                if key in replacement_project_keys:
+                    if not _dcp_is_panel_revision_row(r):
+                        continue
+                elif not _dcp_is_panel_spa_row(r):
+                    continue
+                if _dcp_panel_mw(r, year) and _dcp_effective_category(r, year) in _DCP_POSSIBLE_KEYS:
+                    valid_project_keys.add(key)
+                    projects.setdefault(key, {
+                        "mw": 0.0,
+                        "category": replacement_categories.get(key) or original_categories.get(key) or _dcp_effective_category(r, year),
+                    })
+        for r in rows:
+            key = _dcp_project_key(r)
+            if not key:
+                continue
+            if key in replacement_project_keys and _dcp_is_panel_spa_row(r):
+                continue
+            if mode == "valid":
+                if key not in valid_project_keys:
+                    continue
+                if _dcp_effective_category(r, year) not in _DCP_POSSIBLE_KEYS:
+                    continue
+            else:
+                projects.setdefault(key, {
+                    "mw": 0.0,
+                    "category": replacement_categories.get(key) or original_categories.get(key) or _dcp_effective_category(r, year),
+                })
+            mw = max(0.0, _dcp_panel_mw(r, year))
+            if mw:
+                projects[key]["mw"] = projects[key].get("mw", 0.0) + mw
+        records = list(projects.values())
+        if mode == "valid":
+            return [
+                record
+                for record in records
+                if record.get("mw", 0.0) > 0 and record.get("category") in _DCP_POSSIBLE_KEYS
             ]
+        return [record for record in records if record.get("mw", 0.0) >= 0]
+
+    def _dcp_power_band_project_values(rows, year, mode="total"):
+        return [
+            record.get("mw", 0.0)
+            for record in _dcp_power_band_project_records(rows, year, mode=mode)
+        ]
+
+    def _dcp_power_band_ranges(values):
+        values = [v for v in values if v >= 0]
         if not values:
             return []
         max_upper = _dcp_power_band_upper(max(values))
@@ -2560,54 +3278,76 @@ def server(input: Inputs, output: Outputs, session: Session):
             idx = max(0, (upper // 50) - 1)
             if idx < len(bands):
                 bands[idx]["count"] += 1
-        for band in bands:
-            lower, upper = band["lower"], band["upper"]
-            band["label"] = f"[{lower}, {upper}]" if lower == 0 else f"({lower}, {upper}]"
-        return bands
-
-    def _dcp_aggregate_raw_year(rows, year):
-        acc = {
-            "aprovado": 0.0,
-            "inviavel": 0.0,
-            "analise": 0.0,
-            "anulado": 0.0,
-            "projetos": 0,
-            "aprovado_projetos": 0,
-            "inviavel_projetos": 0,
-            "analise_projetos": 0,
-            "anulado_projetos": 0,
-        }
-        if year is None:
-            return acc
-        project_mw = {}
-        for r in rows:
-            category = _dcp_viab_category(_dcp_raw_year_viab(r, year))
-            mw = _dcp_raw_panel_mw(r, year)
-            if not mw:
-                continue
-            acc[category] += mw
-            _dcp_track_project(project_mw, r, category, mw)
-        _dcp_apply_project_counts(acc, project_mw)
-        return acc
-
-    def _dcp_raw_year_series(rows, years):
         return [
-            {"year": y, **_dcp_aggregate_raw_year(rows, y)}
-            for y in years
+            {"lower": band["lower"], "upper": band["upper"]}
+            for band in _dcp_compact_power_bands(bands)
         ]
 
+    def _dcp_count_power_band_values(values, ranges):
+        bands = [
+            {"lower": band["lower"], "upper": band["upper"], "count": 0}
+            for band in ranges
+        ]
+        for mw in values:
+            for band in bands:
+                if _dcp_power_band_contains(band, mw):
+                    band["count"] += 1
+                    break
+        for band in bands:
+            lower, upper = band["lower"], band["upper"]
+            band["label"] = _dcp_power_band_label(lower, upper)
+        return bands
+
+    def _dcp_count_power_band_project_records(records, ranges, keys):
+        bands = [
+            {
+                "lower": band["lower"],
+                "upper": band["upper"],
+                "count": 0,
+                **{key: 0 for key in keys},
+            }
+            for band in ranges
+        ]
+        for record in records:
+            mw = record.get("mw", 0.0)
+            category = record.get("category")
+            if category not in keys:
+                continue
+            for band in bands:
+                if _dcp_power_band_contains(band, mw):
+                    band["count"] += 1
+                    band[category] = band.get(category, 0) + 1
+                    break
+        for band in bands:
+            lower, upper = band["lower"], band["upper"]
+            band["label"] = _dcp_power_band_label(lower, upper)
+        return bands
+
+    def _dcp_shared_project_power_band_ranges(rows, year):
+        total_values = _dcp_power_band_project_values(rows, year, mode="total")
+        valid_values = _dcp_power_band_project_values(rows, year, mode="valid")
+        return _dcp_power_band_ranges(total_values + valid_values)
+
+    def _dcp_power_band_series(rows, year, distinct_revisions=False, mode="total", ranges=None):
+        if year is None:
+            return []
+        if distinct_revisions:
+            values = [max(0.0, _dcp_panel_mw(r, year)) for r in rows]
+            values = [v for v in values if v > 0]
+        else:
+            values = _dcp_power_band_project_values(rows, year, mode=mode)
+        band_ranges = ranges or _dcp_power_band_ranges(values)
+        return _dcp_count_power_band_values(values, band_ranges)
+
+    def _dcp_power_band_category_series(rows, year, mode="total", ranges=None):
+        keys = list(_DCP_POSSIBLE_KEYS if mode == "valid" else _DCP_STACK_KEYS)
+        records = _dcp_power_band_project_records(rows, year, mode=mode)
+        values = [record.get("mw", 0.0) for record in records]
+        band_ranges = ranges or _dcp_power_band_ranges(values)
+        return _dcp_count_power_band_project_records(records, band_ranges, keys)
+
     def _dcp_aggregate_possible_year(rows, year):
-        acc = {
-            "aprovado": 0.0,
-            "inviavel": 0.0,
-            "analise": 0.0,
-            "anulado": 0.0,
-            "projetos": 0,
-            "aprovado_projetos": 0,
-            "inviavel_projetos": 0,
-            "analise_projetos": 0,
-            "anulado_projetos": 0,
-        }
+        acc = _dcp_empty_category_acc()
         if year is None:
             return acc
         project_mw = {}
@@ -2615,10 +3355,8 @@ def server(input: Inputs, output: Outputs, session: Session):
             mw = _dcp_panel_mw(r, year)
             if not mw:
                 continue
-            category = _dcp_viab_category(_dcp_year_viab(r, year))
-            if category in ("inviavel", "anulado"):
-                continue
-            if category == "aprovado" and r.get("cust_status") != "assinado":
+            category = _dcp_effective_category(r, year)
+            if category not in _DCP_POSSIBLE_KEYS:
                 continue
             acc[category] += mw
             _dcp_track_project(project_mw, r, category, mw)
@@ -2628,6 +3366,27 @@ def server(input: Inputs, output: Outputs, session: Session):
     def _dcp_possible_year_series(rows, years):
         return [
             {"year": y, **_dcp_aggregate_possible_year(rows, y)}
+            for y in years
+        ]
+
+    def _dcp_aggregate_summary_year(rows, year):
+        acc = _dcp_empty_category_acc()
+        if year is None:
+            return acc
+        project_mw = {}
+        for r in rows:
+            category = _dcp_summary_category(r, year)
+            mw = _dcp_panel_mw(r, year)
+            if mw:
+                acc[category] += mw
+            project_category = _dcp_summary_category(r, year, raw=True)
+            _dcp_track_project(project_mw, r, project_category, _dcp_raw_panel_mw(r, year))
+        _dcp_apply_project_counts(acc, project_mw)
+        return acc
+
+    def _dcp_summary_year_series(rows, years):
+        return [
+            {"year": y, **_dcp_aggregate_summary_year(rows, y)}
             for y in years
         ]
 
@@ -2645,29 +3404,94 @@ def server(input: Inputs, output: Outputs, session: Session):
     def _dcp_state_summary(rows, year):
         acc = _dcp_aggregate_year(rows, year)
         total = _dcp_total(acc)
-        cust = sum(
-            _dcp_panel_mw(r, year)
-            for r in rows
-            if (
-                year is not None
-                and r.get("cust_status") == "assinado"
-                and _dcp_panel_mw(r, year)
-                and _dcp_viab_category(_dcp_year_viab(r, year)) == "aprovado"
-            )
-        )
         project_keys = {_dcp_project_key(r) for r in rows if _dcp_project_key(r)}
         return {
             "solicitacoes": len(rows),
             "projetos": len(project_keys),
             "total": total,
+            "cust": acc["cust"],
             "aprovado": acc["aprovado"],
+            "total_aprovado": _dcp_total_aprovado(acc),
             "inviavel": acc["inviavel"],
             "analise": acc["analise"],
-            "cust": cust,
+            "anulado": acc["anulado"],
         }
+
+    def _dcp_valid_rows(rows, year):
+        if year is None:
+            return []
+        return [
+            r
+            for r in rows
+            # Conta revisões válidas mesmo quando elas repetem o montante original.
+            if _dcp_year_mw(r, year)
+            and _dcp_effective_category(r, year) in _DCP_POSSIBLE_KEYS
+        ]
+
+    def _dcp_cust_signed_mw(rows, year):
+        return sum(
+            _dcp_panel_mw(r, year)
+            for r in rows
+            if (
+                year is not None
+                and _dcp_panel_mw(r, year)
+                and _dcp_effective_category(r, year) == "cust"
+            )
+        )
 
     def _dcp_pct(value, total):
         return "0%" if not total else f"{round(100 * value / total):.0f}%"
+
+    def _dcp_kpi_icon(name):
+        base_attrs = {
+            "viewBox": "0 0 24 24",
+            "fill": "none",
+            "stroke": "currentColor",
+            "aria-hidden": "true",
+            "focusable": "false",
+            "stroke-width": "2",
+            "stroke-linecap": "round",
+            "stroke-linejoin": "round",
+        }
+        if name == "search":
+            return _svg_tag(
+                "svg",
+                _svg_tag("circle", cx="10.5", cy="10.5", r="6.5"),
+                _svg_tag("line", x1="15.5", y1="15.5", x2="21", y2="21"),
+                **base_attrs,
+            )
+        if name == "contract":
+            return _svg_tag(
+                "svg",
+                _svg_tag("path", d="M7 3h7l4 4v14H7z"),
+                _svg_tag("polyline", points="14 3 14 8 19 8"),
+                _svg_tag("line", x1="10", y1="12", x2="16", y2="12"),
+                _svg_tag("line", x1="10", y1="16", x2="15", y2="16"),
+                **base_attrs,
+            )
+        if name == "datacenter":
+            return _svg_tag(
+                "svg",
+                _svg_tag("rect", x="5", y="3", width="14", height="4", rx="1"),
+                _svg_tag("rect", x="5", y="9", width="14", height="4", rx="1"),
+                _svg_tag("rect", x="5", y="15", width="14", height="4", rx="1"),
+                _svg_tag("circle", cx="8", cy="5", r="0.65", fill="currentColor", stroke="none"),
+                _svg_tag("circle", cx="8", cy="11", r="0.65", fill="currentColor", stroke="none"),
+                _svg_tag("circle", cx="8", cy="17", r="0.65", fill="currentColor", stroke="none"),
+                _svg_tag("path", d="M12 19v2"),
+                _svg_tag("path", d="M7 21h10"),
+                **base_attrs,
+            )
+        if name == "contract_x":
+            return _svg_tag(
+                "svg",
+                _svg_tag("path", d="M7 3h7l4 4v14H7z"),
+                _svg_tag("polyline", points="14 3 14 8 19 8"),
+                _svg_tag("line", x1="10", y1="12", x2="14", y2="16"),
+                _svg_tag("line", x1="14", y1="12", x2="10", y2="16"),
+                **base_attrs,
+            )
+        return name
 
     def _dcp_card(title, value, sub, tone, icon, info=None):
         stat_tone = {
@@ -2676,6 +3500,7 @@ def server(input: Inputs, output: Outputs, session: Session):
             "green": "green",
             "blue": "blue",
             "red": "red",
+            "amber": "amber",
             "purple": "purple",
         }.get(tone, "green")
         title_children = [tags.span(title)]
@@ -2689,64 +3514,258 @@ def server(input: Inputs, output: Outputs, session: Session):
             class_=f"stat-card {stat_tone}",
         )
 
-    def _dcp_chart_title_options(selected_uf):
-        state_label = selected_uf or "RB"
+    def _dcp_chart_option_groups(selected_uf):
+        state_label = _dcp_state_short_label(selected_uf)
         return [
-            ("received", f"Montante Total de DCs que chegou no ONS — {state_label}"),
-            ("possible", f"Evolução do montante total de possíveis DCs em {state_label}"),
-            ("raw", f"Montante Total de DCs que chegou no ONS — {state_label} — Desconsiderando Limitação pelo Horizonte de Contratação"),
-            ("power_band", "Distribuição das Solicitações por Faixa de Potência [MW] - Apenas RB - SPAs"),
-            ("power_band_requests", "Distribuição das Solicitações por Faixa de Potência [MW] - Apenas RB - SPAs e RPAs distintos"),
+            ("Principais", [
+                ("possible", f"Montante Válido [MW] - {state_label}"),
+                ("received_requests", f"Montante Total de DCs [MW] - {state_label}"),
+                ("power_band", f"Distribuição de Projetos por Faixa de Potência [MW] - {state_label}"),
+                # Reativar se precisar voltar a exibir solicitações e revisões separadas no painel:
+                # ("power_band_requests", "Distribuição das Solicitações por Faixa de Potência [MW] - Solicitações e revisões separadas"),
+            ]),
+            ("Extras", [
+                ("summary", f"Montante total de DCs [MW] - {state_label}"),
+                ("received", f"Montante total de DCs [MW] - {state_label} (sem montante de revisão)"),
+                ("power_band_total", f"Distribuição de Projetos por Faixa de Potência [MW] - Montante Total - {state_label}"),
+                ("power_band_valid", f"Distribuição de Projetos por Faixa de Potência [MW] - Montante Válido - {state_label}"),
+            ]),
         ]
 
-    def _dcp_chart_option(value, label, chart_type):
-        attrs = {"value": value}
-        if value == chart_type:
-            attrs["selected"] = "selected"
-        return tags.option(label, **attrs)
+    def _dcp_chart_title_options(selected_uf):
+        return [
+            option
+            for _group_label, options in _dcp_chart_option_groups(selected_uf)
+            for option in options
+        ]
+
+    def _dcp_chart_button_label(value, selected_uf, metric=None):
+        state_label = _dcp_state_short_label(selected_uf)
+        unit = "[Projetos]" if metric == "projects" and value not in ("power_band", "power_band_total", "power_band_valid", "power_band_requests") else "[MW]"
+        labels = {
+            "received_requests": f"Montante Total - {state_label}",
+            "possible": f"Montante Válido {unit} - {state_label}",
+            "summary": f"Resumo Chegada ONS {unit} - {state_label}",
+            "power_band_requests": "Faixa [MW] - Solicitações",
+            "received": f"Chegada ONS {unit} - {state_label} (sem montante de revisão)",
+            "power_band": "Faixa [MW] - Projetos",
+            "power_band_total": "Faixa [MW] Projetos - Total",
+            "power_band_valid": "Faixa [MW] Projetos - Válido",
+        }
+        return labels.get(value, value)
+
+    def _dcp_chart_base_title(selected_uf, chart_type):
+        return next(
+            (label for value, label in _dcp_chart_title_options(selected_uf) if value == chart_type),
+            chart_type,
+        )
+
+    def _dcp_chart_display_title(selected_uf, chart_type, metric=None):
+        title = _dcp_chart_base_title(selected_uf, chart_type)
+        if metric == "projects" and chart_type not in ("power_band", "power_band_total", "power_band_valid", "power_band_requests"):
+            return title.replace("[MW]", "[Projetos]")
+        return title
+
+    def _dcp_chart_info(chart_type):
+        infos = {
+            "received_requests": (
+                "Montante total em [MW] de DCs que chegaram na Rede Básica do SIN. "
+                "Considera solicitações de novos projetos e revisões de montante. "
+                "Cada revisão é vinculada ao projeto original: quando a original não virou base contratada "
+                "ou apta a CUST, ela preserva seu resultado próprio e a revisão entra com o valor revisado cheio; "
+                "quando existe base contratada ou apta a CUST, a revisão entra apenas pelo acréscimo. "
+                "Na métrica Projetos, apenas solicitações originais são contadas; revisões não criam novos projetos. "
+                "O empilhamento separa CUST assinado, aprovados aptos a CUST, em análise, aprovados não contratados e inviáveis. "
+                "Aprovados não contratados reúne os montantes cujo prazo de 90 dias para assinatura do CUST expirou sem contratação e as solicitações anuladas."
+            ),
+            "received": (
+                "Montante original em [MW] de novos projetos de DCs que chegaram na Rede Básica do SIN. "
+                "Não inclui incrementos de revisões posteriores. "
+                "Os valores respeitam a limitação pelo horizonte de contratação."
+            ),
+            "possible": (
+                "Montante válido em [MW] de DCs em curso na Rede Básica do SIN. "
+                "Considera solicitações de novos projetos e revisões de montante. "
+                "Quando a original não virou base contratada ou apta a CUST, a revisão em análise ou aprovada carrega o valor revisado cheio; "
+                "quando existe base contratada ou apta a CUST, a revisão entra apenas pelo acréscimo. "
+                "Na métrica Projetos, apenas solicitações originais são contadas; revisões não criam novos projetos. "
+                "Inclui CUST assinado, aprovados aptos a CUST e em análise. "
+                "Não inclui aprovados não contratados nem inviáveis."
+            ),
+            "summary": (
+                "Resumo em [MW] do montante total de DCs que chegou na Rede Básica do SIN. "
+                "Considera solicitações de novos projetos e revisões de montante. "
+                "Revisões entram com o valor revisado cheio quando a original não virou base contratada ou apta a CUST, "
+                "e entram pelo acréscimo quando há base contratada ou apta a CUST. "
+                "Na métrica Projetos, apenas solicitações originais são contadas; revisões não criam novos projetos. "
+                "É uma visão resumida em três classes: Aprovado, Em análise e Inviável. "
+                "Aprovado consolida CUST assinados, aprovados aptos a CUST e aprovados não contratados."
+            ),
+            "power_band": (
+                "Distribuição dos projetos de DCs por faixa de potência em [MW]. "
+                "Conta projetos consolidados pelo projeto original. "
+                "Revisões alteram o montante consolidado do projeto, mas não aumentam a contagem de projetos. "
+                "Projetos sem MW considerado no ano de referência entram na faixa [0, 50]. "
+                "O enquadramento por MW usa a mesma lógica do gráfico de chegada ONS: revisões entram com valor cheio "
+                "quando a original não virou base contratada ou apta a CUST, e apenas pelo acréscimo quando há base."
+            ),
+            "power_band_total": (
+                "Distribuição dos projetos de DCs por faixa de potência em [MW] usando o Montante Total. "
+                "Conta projetos consolidados pelo projeto original. "
+                "As colunas são empilhadas por CUST assinado, aprovados aptos a CUST, em análise, aprovados não contratados e inviáveis. "
+                "Revisões alteram o montante consolidado do projeto, mas não aumentam a contagem de projetos. "
+                "Revisões entram com valor cheio quando a original não virou base contratada ou apta a CUST, e apenas pelo acréscimo quando há base. "
+                "Projetos sem MW considerado no ano de referência entram na faixa [0, 50]. "
+                "As faixas são as mesmas do gráfico de faixa por Montante Válido."
+            ),
+            "power_band_valid": (
+                "Distribuição dos projetos de DCs por faixa de potência em [MW] usando o Montante Válido. "
+                "Conta os projetos pela mesma regra do gráfico Montante Válido [Projetos]. "
+                "As colunas são empilhadas por CUST assinado, aprovados aptos a CUST e em análise. "
+                "Inclui apenas CUST assinado, aprovados aptos a CUST e em análise. "
+                "Revisões alteram o montante consolidado do projeto, mas não aumentam a contagem de projetos. "
+                "Revisões entram com valor cheio quando a original não virou base contratada ou apta a CUST, e apenas pelo acréscimo quando há base. "
+                "As faixas são as mesmas do gráfico de faixa por Montante Total."
+            ),
+            "power_band_requests": (
+                "Distribuição das solicitações de DCs por faixa de potência em [MW]. "
+                "Considera solicitações de novos projetos e revisões como solicitações distintas. "
+                "A solicitação original entra com seu montante próprio; a revisão entra com o valor cheio quando a original "
+                "não virou base contratada ou apta a CUST, e apenas pelo acréscimo quando há base."
+            ),
+        }
+        return infos.get(chart_type, "")
+
+    def _dcp_chart_button(value, label, chart_type, selected_uf, metric=None, extra=False):
+        return tags.button(
+            _dcp_chart_button_label(value, selected_uf, metric),
+            type="button",
+            title=label,
+            class_=(
+                "dcp-chart-btn"
+                + (" active" if value == chart_type else "")
+                + (" extra" if extra else "")
+            ),
+            **{"data-chart": value},
+        )
+
+    def _dcp_chart_title_block(selected_uf, chart_type, metric=None):
+        title_class = "dcp-chart-title-block"
+        if chart_type in ("power_band", "power_band_total", "power_band_valid", "power_band_requests"):
+            title_class += " dcp-band-title-block"
+        return tags.div(
+            tags.span(_dcp_chart_display_title(selected_uf, chart_type, metric), class_="dcp-chart-title"),
+            class_=title_class,
+        )
 
     def _dcp_chart_header(selected_uf, chart_type, metric=None):
+        info = _dcp_chart_info(chart_type)
+        groups = _dcp_chart_option_groups(selected_uf)
+        main_options = groups[0][1]
+        extra_options = groups[1][1]
+        extra_values = {value for value, _label in extra_options}
+        extras_attrs = {"open": "open"} if chart_type in extra_values else {}
         return tags.div(
             tags.div(
-                tags.select(
-                    *(_dcp_chart_option(value, label, chart_type) for value, label in _dcp_chart_title_options(selected_uf)),
-                    class_="dcp-chart-select",
-                    **{"aria-label": "Tipo de gráfico"},
+                tags.div(
+                    tags.div(
+                        *(_dcp_chart_button(value, label, chart_type, selected_uf, metric) for value, label in main_options),
+                        class_="dcp-chart-main-options",
+                    ),
+                    tags.details(
+                        tags.summary(
+                            tags.span("Extras"),
+                            tags.span("▾", class_="dcp-extras-caret"),
+                        ),
+                        tags.div(
+                            *(_dcp_chart_button(value, label, chart_type, selected_uf, metric, extra=True) for value, label in extra_options),
+                            class_="dcp-chart-extra-options",
+                        ),
+                        class_="dcp-chart-extras",
+                        **extras_attrs,
+                    ),
+                    class_="dcp-chart-picker",
                 ),
+                tags.span("i", class_="dcp-info-dot dcp-chart-info dcp-chart-picker-info", title=info, **{"aria-label": info}) if info else None,
                 class_="dcp-panel-title dcp-panel-title-control",
             ),
             tags.div(
-                tags.button("Exibir: MW", class_=f"dcp-toggle {'active' if metric == 'mw' else ''}", **{"data-metric": "mw", "type": "button"}),
-                tags.button("Projetos", class_=f"dcp-toggle {'active' if metric == 'projects' else ''}", **{"data-metric": "projects", "type": "button"}),
-                class_="dcp-chart-toggle",
-            ) if metric else None,
+                ui.download_button(
+                    "download_dcp_chart",
+                    "⬇ Dados",
+                    class_="back-btn dcp-download-btn",
+                    title="Baixar os dados usados para construir este gráfico, caso queira montar seu próprio gráfico.",
+                ),
+                tags.div(
+                    tags.button("Exibir: MW", class_=f"dcp-toggle {'active' if metric == 'mw' else ''}", **{"data-metric": "mw", "type": "button"}),
+                    tags.button("Projetos", class_=f"dcp-toggle {'active' if metric == 'projects' else ''}", **{"data-metric": "projects", "type": "button"}),
+                    class_="dcp-chart-toggle",
+                ) if metric else None,
+                class_="dcp-chart-actions",
+            ),
             class_="dcp-panel-head",
         )
 
-    def _dcp_chart(series, selected_uf, chart_type="received", metric="mw", include_inviavel=True, include_line=False):
+    def _dcp_chart(series, selected_uf, chart_type="possible", metric="mw", include_inviavel=True, include_line=False):
         width, height = 760, 260
-        left, right, top, bottom = 54, 20, 24, 42
+        left, right, top, bottom = 58, 54, 18, 42
         plot_w = width - left - right
         plot_h = height - top - bottom
         years = [s["year"] for s in series]
-        chart_type = chart_type if chart_type in ("received", "possible", "raw", "power_band", "power_band_requests") else "received"
+        chart_type = chart_type if chart_type in ("received", "received_requests", "possible", "summary", "power_band", "power_band_total", "power_band_valid", "power_band_requests") else "possible"
         metric = metric if metric in ("mw", "projects") else "mw"
         fmt_value = _dcp_fmt_mw if metric == "mw" else _dcp_fmt
         def chart_value(item, key):
             if metric == "projects":
                 return item.get(f"{key}_projetos", 0)
             return item.get(key, 0.0)
-        keys = ["aprovado", "inviavel", "analise"] if include_inviavel else ["aprovado", "analise"]
+        if chart_type == "summary":
+            keys = list(_DCP_SUMMARY_KEYS)
+        elif chart_type == "possible":
+            keys = list(_DCP_POSSIBLE_KEYS)
+        else:
+            keys = list(_DCP_STACK_KEYS if include_inviavel else _DCP_POSSIBLE_KEYS)
         totals = [sum(chart_value(s, key) for key in keys) for s in series]
         max_total = max(totals) if totals else 0
         max_total = max_total or 1
         step = plot_w / max(len(series), 1)
         bar_w = min(46, step * 0.45)
-        colors = {"aprovado": "#16A34A", "inviavel": "#DC2626", "analise": "#2563EB", "anulado": "#6B7280"}
-        labels = {"aprovado": "Aprovado", "inviavel": "Inviável", "analise": "Em análise", "anulado": "Anulado"}
+        colors = {
+            "cust": "#14532D",
+            "aprovado": "#22C55E",
+            "analise": "#2563EB",
+            "anulado": "#D97706",
+            "inviavel": "#DC2626",
+        }
+        labels = {
+            "cust": "CUST assinado",
+            "aprovado": "Aprovado" if chart_type == "summary" else "Aprovados aptos a CUST",
+            "analise": "Em análise",
+            "anulado": "Aprovados não contratados",
+            "inviavel": "Inviável",
+        }
 
         elems = []
         bar_labels = []
+        min_internal_label_h = 18
+        min_callout_gap = 12
+
+        def _placed_callouts(callouts):
+            if not callouts:
+                return []
+            ordered = sorted(callouts, key=lambda c: c["desired_y"])
+            placed = []
+            for callout in ordered:
+                y = min(max(callout["desired_y"], top + 8), top + plot_h - 4)
+                if placed and y - placed[-1]["y"] < min_callout_gap:
+                    y = placed[-1]["y"] + min_callout_gap
+                callout["y"] = min(y, top + plot_h - 4)
+                placed.append(callout)
+            for idx in range(len(placed) - 2, -1, -1):
+                if placed[idx + 1]["y"] - placed[idx]["y"] < min_callout_gap:
+                    placed[idx]["y"] = max(top + 8, placed[idx + 1]["y"] - min_callout_gap)
+            return sorted(placed, key=lambda c: c["order"])
+
         for i in range(5):
             y = top + plot_h - (plot_h * i / 4)
             val = max_total * i / 4
@@ -2761,6 +3780,7 @@ def server(input: Inputs, output: Outputs, session: Session):
             total = sum(chart_value(item, k) for k in keys)
             line_y = top + plot_h - (total / max_total * plot_h)
             line_points.append(f"{x:.1f},{line_y:.1f}")
+            small_callouts = []
             for key in keys:
                 val = chart_value(item, key)
                 h = val / max_total * plot_h
@@ -2768,13 +3788,48 @@ def server(input: Inputs, output: Outputs, session: Session):
                     continue
                 y_base -= h
                 elems.append(_svg_tag("rect", x=x - bar_w / 2, y=y_base, width=bar_w, height=max(h, 1), fill=colors[key], rx=2))
+                y_mid = y_base + max(h, 1) / 2
+                if h >= min_internal_label_h:
+                    bar_labels.append(_svg_tag(
+                        "text",
+                        fmt_value(val),
+                        x=x,
+                        y=y_mid,
+                        class_=f"dcp-chart-bar-label dcp-chart-bar-label-{key}",
+                        **{"text-anchor": "middle", "dominant-baseline": "middle"},
+                    ))
+                else:
+                    room_right = x + bar_w / 2 + 46 < width - 4
+                    side = "right" if room_right else "left"
+                    text_x = x + bar_w / 2 + 7 if side == "right" else x - bar_w / 2 - 7
+                    small_callouts.append({
+                        "key": key,
+                        "label": fmt_value(val),
+                        "desired_y": y_mid,
+                        "order": len(small_callouts),
+                        "side": side,
+                        "text_x": text_x,
+                        "line_x1": x + bar_w / 2 if side == "right" else x - bar_w / 2,
+                        "line_x2": text_x - 3 if side == "right" else text_x + 3,
+                        "anchor": "start" if side == "right" else "end",
+                    })
+            for callout in _placed_callouts(small_callouts):
+                bar_labels.append(_svg_tag(
+                    "line",
+                    x1=callout["line_x1"],
+                    y1=callout["desired_y"],
+                    x2=callout["line_x2"],
+                    y2=callout["y"],
+                    class_="dcp-chart-callout-line",
+                    stroke=colors[callout["key"]],
+                ))
                 bar_labels.append(_svg_tag(
                     "text",
-                    fmt_value(val),
-                    x=x,
-                    y=y_base + h / 2,
-                    class_=f"dcp-chart-bar-label dcp-chart-bar-label-{key}",
-                    **{"text-anchor": "middle", "dominant-baseline": "middle"},
+                    callout["label"],
+                    x=callout["text_x"],
+                    y=callout["y"],
+                    class_=f"dcp-chart-callout-label dcp-chart-callout-label-{callout['key']}",
+                    **{"text-anchor": callout["anchor"], "dominant-baseline": "middle"},
                 ))
             elems.append(_svg_tag("text", str(item["year"]), x=x, y=top + plot_h + 24, class_="dcp-chart-axis", **{"text-anchor": "middle"}))
             if total:
@@ -2796,21 +3851,70 @@ def server(input: Inputs, output: Outputs, session: Session):
 
         return tags.div(
             _dcp_chart_header(selected_uf, chart_type, metric),
-            tags.svg(*elems, viewBox=f"0 0 {width} {height}", class_="dcp-chart-svg", role="img"),
-            tags.div(*legend_items, class_="dcp-chart-legend"),
+            tags.div(
+                _dcp_chart_title_block(selected_uf, chart_type, metric),
+                tags.svg(
+                    tags.title(_dcp_chart_display_title(selected_uf, chart_type, metric)),
+                    *elems,
+                    viewBox=f"0 0 {width} {height}",
+                    class_="dcp-chart-svg",
+                    role="img",
+                ),
+                tags.div(*legend_items, class_="dcp-chart-legend"),
+                class_="dcp-chart-body",
+            ),
             class_="dcp-panel dcp-chart-panel",
         )
 
     def _dcp_power_band_chart(bands, selected_uf, chart_type="power_band"):
-        width, height = 760, 260
-        left, right, top, bottom = 48, 20, 28, 46
+        width, height = 760, 330
+        left, right, top, bottom = 48, 20, 72, 46
         plot_w = width - left - right
         plot_h = height - top - bottom
+        stacked_keys = []
+        if chart_type == "power_band_total":
+            stacked_keys = list(_DCP_STACK_KEYS)
+        elif chart_type == "power_band_valid":
+            stacked_keys = list(_DCP_POSSIBLE_KEYS)
         max_count = max((b["count"] for b in bands), default=0) or 1
-        axis_max = max(5, int(((max_count + 4) // 5) * 5))
+        axis_target = max_count + max(2, int(max_count * 0.2))
+        axis_max = max(5, int(((axis_target + 4) // 5) * 5))
         step = plot_w / max(len(bands), 1)
         bar_w = min(step * 0.96, 120)
+        colors = {
+            "cust": "#14532D",
+            "aprovado": "#22C55E",
+            "analise": "#2563EB",
+            "anulado": "#D97706",
+            "inviavel": "#DC2626",
+        }
+        labels = {
+            "cust": "CUST assinado",
+            "aprovado": "Aprovados aptos a CUST",
+            "analise": "Em análise",
+            "anulado": "Aprovados não contratados",
+            "inviavel": "Inviável",
+        }
         elems = []
+        min_internal_label_h = 16
+        min_callout_gap = 12
+
+        def _placed_band_callouts(callouts, bar_top_y):
+            if not callouts:
+                return []
+            ordered = sorted(callouts, key=lambda c: c["desired_y"])
+            available = max(bar_top_y - 24 - 10, 0)
+            if len(ordered) > 1:
+                gap = min(min_callout_gap, max(7, available / (len(ordered) - 1)))
+            else:
+                gap = min_callout_gap
+            top_label_y = max(10, bar_top_y - 22 - gap * (len(ordered) - 1))
+            placed = []
+            for idx, callout in enumerate(ordered):
+                callout["y"] = top_label_y + idx * gap
+                placed.append(callout)
+            return placed
+
         for i in range(6):
             y = top + plot_h - (plot_h * i / 5)
             val = axis_max * i / 5
@@ -2820,21 +3924,91 @@ def server(input: Inputs, output: Outputs, session: Session):
         for idx, band in enumerate(bands):
             x = left + step * idx + step / 2
             count = band["count"]
-            h = count / axis_max * plot_h if count else 0
-            y = top + plot_h - h
-            if count:
-                elems.append(_svg_tag("rect", x=x - bar_w / 2, y=y, width=bar_w, height=max(h, 1), fill="#24577F", rx=1))
-                elems.append(_svg_tag("text", _dcp_fmt(count), x=x, y=y - 8, class_="dcp-band-value", **{"text-anchor": "middle"}))
+            if count and stacked_keys:
+                y_base = top + plot_h
+                small_callouts = []
+                for key in stacked_keys:
+                    value = band.get(key, 0)
+                    if not value:
+                        continue
+                    h = value / axis_max * plot_h
+                    y_base -= h
+                    elems.append(_svg_tag("rect", x=x - bar_w / 2, y=y_base, width=bar_w, height=max(h, 1), fill=colors[key], rx=1))
+                    y_mid = y_base + max(h, 1) / 2
+                    if h >= min_internal_label_h:
+                        elems.append(_svg_tag(
+                            "text",
+                            _dcp_fmt(value),
+                            x=x,
+                            y=y_mid,
+                            class_=f"dcp-chart-bar-label dcp-chart-bar-label-{key}",
+                            **{"text-anchor": "middle", "dominant-baseline": "middle"},
+                        ))
+                    else:
+                        small_callouts.append({
+                            "key": key,
+                            "label": _dcp_fmt(value),
+                            "desired_y": y_mid,
+                            "order": len(small_callouts),
+                            "text_x": x,
+                            "line_x1": x,
+                            "line_x2": x,
+                            "anchor": "middle",
+                        })
+                placed_callouts = _placed_band_callouts(small_callouts, y_base)
+                for callout in placed_callouts:
+                    elems.append(_svg_tag(
+                        "line",
+                        x1=callout["line_x1"],
+                        y1=callout["desired_y"],
+                        x2=callout["line_x2"],
+                        y2=callout["y"] + 6,
+                        class_="dcp-chart-callout-line",
+                        stroke=colors[callout["key"]],
+                    ))
+                    elems.append(_svg_tag(
+                        "text",
+                        callout["label"],
+                        x=callout["text_x"],
+                        y=callout["y"],
+                        class_=f"dcp-chart-callout-label dcp-chart-callout-label-{callout['key']}",
+                        **{"text-anchor": callout["anchor"], "dominant-baseline": "middle"},
+                    ))
+                total_y = y_base - 8
+                if placed_callouts:
+                    total_y = placed_callouts[0]["y"] - 12
+                if total_y >= 10:
+                    elems.append(_svg_tag("text", _dcp_fmt(count), x=x, y=total_y, class_="dcp-band-value", **{"text-anchor": "middle"}))
+            else:
+                h = count / axis_max * plot_h if count else 0
+                y = top + plot_h - h
+                if count:
+                    elems.append(_svg_tag("rect", x=x - bar_w / 2, y=y, width=bar_w, height=max(h, 1), fill="#24577F", rx=1))
+                    elems.append(_svg_tag("text", _dcp_fmt(count), x=x, y=y - 8, class_="dcp-band-value", **{"text-anchor": "middle"}))
             elems.append(_svg_tag("text", band["label"], x=x, y=top + plot_h + 26, class_="dcp-chart-axis dcp-band-axis", **{"text-anchor": "middle"}))
-        note = (
-            "SPAs e RPAs contados como solicitações distintas no ano de referência."
+        legend_items = []
+        for key in stacked_keys:
+            legend_items.append(tags.span(tags.span(style=f"background:{colors[key]};", class_="dcp-legend-swatch"), labels[key], class_="dcp-legend-item"))
+        note = None if chart_type in ("power_band_total", "power_band_valid") else (
+            "Solicitações de novos projetos e revisões contadas separadamente no ano de referência. Faixas sem solicitações foram omitidas."
             if chart_type == "power_band_requests"
-            else "Projetos consolidados pelo SPA original no ano de referência."
+            else "Projetos consolidados pelo projeto original; a faixa usa o MW do projeto com incrementos positivos das revisões de montante. Projetos sem MW considerado entram em [0, 50]. Faixas sem projetos foram omitidas; quando há muitas faixas, intervalos altos são agrupados para manter os rótulos legíveis."
         )
         return tags.div(
             _dcp_chart_header(selected_uf, chart_type),
-            tags.svg(*elems, viewBox=f"0 0 {width} {height}", class_="dcp-chart-svg", role="img"),
-            tags.div(note, class_="dcp-muted dcp-band-note"),
+            tags.div(
+                _dcp_chart_title_block(selected_uf, chart_type),
+                tags.svg(
+                    tags.title(_dcp_chart_display_title(selected_uf, chart_type)),
+                    *elems,
+                    viewBox=f"0 0 {width} {height}",
+                    class_="dcp-chart-svg",
+                    role="img",
+                ),
+                tags.div(*legend_items, class_="dcp-chart-legend") if legend_items else None,
+                tags.div(note, class_="dcp-muted dcp-band-note") if note else None,
+                class_="dcp-chart-body",
+            ),
             class_="dcp-panel dcp-chart-panel",
         )
 
@@ -2848,51 +4022,320 @@ def server(input: Inputs, output: Outputs, session: Session):
             return "#22C55E"
         if ratio >= 0.20:
             return "#86EFAC"
-        return "#DCFCE7"
+        return "#BBF7D0"
 
     def _dcp_map(state_totals, selected_uf):
+        selected_states = set(_dcp_state_values(selected_uf))
         max_value = max(state_totals.values()) if state_totals else 1
         rules = []
         for uf in UF_MAP:
             rules.append(f".dcp-brazil-map #{uf} {{ fill: {_dcp_map_color(state_totals.get(uf, 0.0), max_value)} !important; }}")
-        if selected_uf:
-            rules.append(f".dcp-brazil-map #{selected_uf} {{ stroke: #14532D !important; stroke-width: 2.4 !important; }}")
+        for uf in selected_states:
+            rules.append(f".dcp-brazil-map #{uf} {{ stroke: #14532D !important; stroke-width: 2.4 !important; }}")
         return tags.div(
             tags.style("\n".join(rules)),
             HTML(BRAZIL_MAP_SVG),
             class_="dcp-brazil-map",
+            title="Clique no fundo do mapa para limpar a seleção de estados",
         )
 
     def _dcp_ranking(state_totals, year):
-        rows = sorted(state_totals.items(), key=lambda item: item[1], reverse=True)[:8]
+        all_panel_rows = _dcp_base_rows(include_state=False)
+        state_valid_totals = {}
+        state_summaries = {}
+        ufs = sorted({
+            str(r.get("uf") or "").upper()
+            for r in all_panel_rows
+            if str(r.get("uf") or "").upper() in UF_MAP
+        })
+        for uf in ufs:
+            uf_rows = [r for r in all_panel_rows if str(r.get("uf") or "").upper() == uf]
+            acc = _dcp_aggregate_year(uf_rows, year)
+            valid_acc = _dcp_aggregate_possible_year(uf_rows, year)
+            valid_rows = _dcp_valid_rows(uf_rows, year)
+            valid_total = _dcp_total(valid_acc)
+            if valid_total:
+                state_valid_totals[uf] = valid_total
+            state_summaries[uf] = {
+                "solicitacoes_validas": len(valid_rows),
+                "projetos": acc["projetos"],
+                "total": state_totals.get(uf, 0.0),
+                "valido": valid_total,
+                "aprovado": _dcp_total_aprovado_valido(acc),
+                "cust": _dcp_cust_signed_mw(uf_rows, year),
+            }
+
+        total_solicitacoes_validas = sum(v["solicitacoes_validas"] for v in state_summaries.values())
+        total_valido = sum(state_valid_totals.values())
+        total_aprovado = sum(v["aprovado"] for v in state_summaries.values())
+        total_cust = sum(v["cust"] for v in state_summaries.values())
+        rows = sorted(state_valid_totals.items(), key=lambda item: item[1], reverse=True)[:8]
         trs = []
-        for idx, (uf, total) in enumerate(rows, start=1):
-            all_rows = [r for r in _dcp_base_rows(include_state=False) if str(r.get("uf") or "").upper() == uf]
-            acc = _dcp_aggregate_year(all_rows, year)
-            cls = "selected" if uf == dc_panel_state.get() else ""
+        for idx, (uf, valid_total) in enumerate(rows, start=1):
+            summary = state_summaries.get(uf, {"solicitacoes_validas": 0, "total": 0.0, "aprovado": 0.0, "cust": 0.0})
+            cls = "selected" if uf in set(_dcp_selected_states()) else ""
             trs.append(tags.tr(
                 tags.td(str(idx), class_="dcp-rank-num"),
-                tags.td(f"{UF_MAP.get(uf, uf)}", class_="dcp-rank-state"),
-                tags.td(_dcp_fmt_mw(total), class_="dcp-rank-mw"),
-                tags.td(_dcp_fmt_mw(acc["aprovado"]), class_="dcp-rank-mw"),
-                tags.td(_dcp_pct(acc["aprovado"], total), class_="dcp-rank-pct"),
+                tags.td(uf, class_="dcp-rank-state", title=UF_MAP.get(uf, uf)),
+                tags.td(_dcp_fmt(summary["solicitacoes_validas"]), class_="dcp-rank-mw"),
+                tags.td(_dcp_fmt_mw(valid_total), class_="dcp-rank-mw"),
+                tags.td(_dcp_pct(valid_total, total_valido), class_="dcp-rank-pct"),
+                tags.td(_dcp_fmt_mw(summary["aprovado"]), class_="dcp-rank-mw"),
+                tags.td(_dcp_pct(summary["aprovado"], summary["valido"]), class_="dcp-rank-pct"),
+                tags.td(_dcp_fmt_mw(summary["cust"]), class_="dcp-rank-mw"),
                 class_=cls,
             ))
+        total_row = tags.tr(
+            tags.td("", class_="dcp-rank-num"),
+            tags.td("Total RB", class_="dcp-rank-state"),
+            tags.td(_dcp_fmt(total_solicitacoes_validas), class_="dcp-rank-mw"),
+            tags.td(_dcp_fmt_mw(total_valido), class_="dcp-rank-mw"),
+            tags.td(_dcp_pct(total_valido, total_valido), class_="dcp-rank-pct"),
+            tags.td(_dcp_fmt_mw(total_aprovado), class_="dcp-rank-mw"),
+            tags.td(_dcp_pct(total_aprovado, total_valido), class_="dcp-rank-pct"),
+            tags.td(_dcp_fmt_mw(total_cust), class_="dcp-rank-mw"),
+        )
         return tags.div(
-            tags.div("Ranking de Estados por MW solicitados", class_="dcp-panel-title"),
+            tags.div("Ranking de Estados por MW", class_="dcp-panel-title"),
             tags.table(
                 tags.thead(tags.tr(
                     tags.th("#"),
-                    tags.th("Estado"),
-                    tags.th("MW solic."),
-                    tags.th("Aprov."),
+                    tags.th("UF"),
+                    tags.th(tags.div("SOLIC."), tags.div("VÁLIDAS")),
+                    tags.th("MW VÁLIDO"),
+                    tags.th("% válido"),
+                    tags.th("MW Aprov."),
                     tags.th("% aprov."),
+                    tags.th("CUST ass."),
                 )),
                 tags.tbody(*trs),
+                tags.tfoot(total_row),
                 class_="dcp-ranking-table",
             ),
             class_="dcp-panel dcp-ranking-panel",
         )
+
+    def _dcp_region_ranking(state_totals, year):
+        ons_regions = (
+            ("N/NE", ("AC", "AL", "AM", "AP", "BA", "CE", "MA", "PA", "PB", "PE", "PI", "RN", "RO", "RR", "SE", "TO")),
+            ("SE/CO", ("DF", "ES", "GO", "MG", "MS", "MT", "RJ", "SP")),
+            ("S", ("PR", "RS", "SC")),
+        )
+        all_panel_rows = _dcp_base_rows(include_state=False)
+        selected_states = set(_dcp_selected_states())
+        selected_regions = {
+            label
+            for label, ufs in ons_regions
+            if selected_states and selected_states.intersection(ufs)
+        }
+        rows = []
+        totals = {
+            "solicitacoes_validas": 0,
+            "valido": 0.0,
+            "aprovado": 0.0,
+            "cust": 0.0,
+        }
+        for label, ufs in ons_regions:
+            uf_set = set(ufs)
+            region_rows = [r for r in all_panel_rows if str(r.get("uf") or "").upper() in uf_set]
+            acc = _dcp_aggregate_year(region_rows, year)
+            total = sum(state_totals.get(uf, 0.0) for uf in uf_set)
+            valid_acc = _dcp_aggregate_possible_year(region_rows, year)
+            valid_rows = _dcp_valid_rows(region_rows, year)
+            valid_total = _dcp_total(valid_acc)
+            cust = _dcp_cust_signed_mw(region_rows, year)
+            totals["solicitacoes_validas"] += len(valid_rows)
+            totals["valido"] += valid_total
+            total_aprovado = _dcp_total_aprovado_valido(acc)
+            totals["aprovado"] += total_aprovado
+            totals["cust"] += cust
+            rows.append({
+                "label": label,
+                "solicitacoes_validas": len(valid_rows),
+                "total": total,
+                "valido": valid_total,
+                "aprovado": total_aprovado,
+                "cust": cust,
+            })
+
+        trs = []
+        for idx, row in enumerate(sorted(rows, key=lambda item: item["valido"], reverse=True), start=1):
+            cls = "selected" if row["label"] in selected_regions else ""
+            trs.append(tags.tr(
+                tags.td(str(idx), class_="dcp-rank-num"),
+                tags.td(row["label"], class_="dcp-rank-state"),
+                tags.td(_dcp_fmt(row["solicitacoes_validas"]), class_="dcp-rank-mw"),
+                tags.td(_dcp_fmt_mw(row["valido"]), class_="dcp-rank-mw"),
+                tags.td(_dcp_pct(row["valido"], totals["valido"]), class_="dcp-rank-pct"),
+                tags.td(_dcp_fmt_mw(row["aprovado"]), class_="dcp-rank-mw"),
+                tags.td(_dcp_pct(row["aprovado"], row["valido"]), class_="dcp-rank-pct"),
+                tags.td(_dcp_fmt_mw(row["cust"]), class_="dcp-rank-mw"),
+                class_=cls,
+            ))
+
+        total_row = tags.tr(
+            tags.td("", class_="dcp-rank-num"),
+            tags.td("Total RB", class_="dcp-rank-state"),
+            tags.td(_dcp_fmt(totals["solicitacoes_validas"]), class_="dcp-rank-mw"),
+            tags.td(_dcp_fmt_mw(totals["valido"]), class_="dcp-rank-mw"),
+            tags.td(_dcp_pct(totals["valido"], totals["valido"]), class_="dcp-rank-pct"),
+            tags.td(_dcp_fmt_mw(totals["aprovado"]), class_="dcp-rank-mw"),
+            tags.td(_dcp_pct(totals["aprovado"], totals["valido"]), class_="dcp-rank-pct"),
+            tags.td(_dcp_fmt_mw(totals["cust"]), class_="dcp-rank-mw"),
+        )
+        return tags.div(
+            tags.div("Ranking de Regiões ONS por MW", class_="dcp-panel-title"),
+            tags.table(
+                tags.thead(tags.tr(
+                    tags.th("#"),
+                    tags.th("Região"),
+                    tags.th(tags.div("SOLIC."), tags.div("VÁLIDAS")),
+                    tags.th("MW VÁLIDO"),
+                    tags.th("% válido"),
+                    tags.th("MW Aprov."),
+                    tags.th("% aprov."),
+                    tags.th("CUST ass."),
+                )),
+                tags.tbody(*trs),
+                tags.tfoot(total_row),
+                class_="dcp-ranking-table",
+            ),
+            class_="dcp-panel dcp-ranking-panel dcp-region-ranking-panel",
+        )
+
+    def _dcp_selected_chart_title(selected_uf, chart_type):
+        return _dcp_chart_base_title(selected_uf, chart_type)
+
+    def _dcp_chart_export_payload():
+        ref_year = _dcp_reference_year()
+        period_years = _dcp_period_years()
+        rows = _dcp_base_rows(include_state=True)
+        selected_uf = _dcp_selected_states()
+        metric = dc_panel_metric.get()
+        chart_type = dc_panel_chart_type.get()
+        chart_type = chart_type if chart_type in ("received", "received_requests", "possible", "summary", "power_band", "power_band_total", "power_band_valid", "power_band_requests") else "possible"
+
+        spa_rows = [r for r in rows if _dcp_is_panel_spa_row(r)]
+        if chart_type == "summary":
+            chart_series = _dcp_summary_year_series(rows, period_years)
+            chart_years = period_years
+            keys = list(_DCP_SUMMARY_KEYS)
+        elif chart_type == "possible":
+            chart_series = _dcp_possible_year_series(rows, period_years)
+            chart_years = period_years
+            keys = list(_DCP_POSSIBLE_KEYS)
+        elif chart_type == "received":
+            chart_series = _dcp_year_series(spa_rows, period_years)
+            chart_years = period_years
+            keys = list(_DCP_STACK_KEYS)
+        elif chart_type == "received_requests":
+            chart_series = _dcp_year_series(rows, period_years)
+            chart_years = period_years
+            keys = list(_DCP_STACK_KEYS)
+        else:
+            chart_series = []
+            chart_years = [ref_year] if ref_year else []
+            keys = []
+
+        labels_export = {
+            "cust": "CUST assinado",
+            "aprovado": "Aprovado" if chart_type == "summary" else "Aprovados aptos a CUST",
+            "analise": "Em analise",
+            "anulado": "Aprovados não contratados",
+            "inviavel": "Inviavel",
+        }
+        title = _dcp_selected_chart_title(selected_uf, chart_type)
+        metric_label = (
+            "Projetos" if chart_type in ("power_band", "power_band_total", "power_band_valid")
+            else "Solicitações" if chart_type == "power_band_requests"
+            else "Projetos" if metric == "projects"
+            else "MW"
+        )
+        metadata_rows = [
+            {"Campo": "Grafico", "Valor": title},
+            {"Campo": "Tipo", "Valor": chart_type},
+            {"Campo": "Metrica exibida", "Valor": metric_label},
+            {"Campo": "UF selecionada", "Valor": _dcp_state_short_label(selected_uf, default="RB")},
+            {"Campo": "Ano de referencia", "Valor": ref_year or ""},
+            {
+                "Campo": "Periodo",
+                "Valor": f"{chart_years[0]}-{chart_years[-1]}" if chart_years else "",
+            },
+            {"Campo": "Gerado em", "Valor": datetime.now().strftime("%d/%m/%Y %H:%M:%S")},
+        ]
+
+        if chart_type in ("power_band", "power_band_total", "power_band_valid", "power_band_requests"):
+            shared_ranges = _dcp_shared_project_power_band_ranges(rows, ref_year)
+            if chart_type in ("power_band_total", "power_band_valid"):
+                band_keys = list(_DCP_POSSIBLE_KEYS if chart_type == "power_band_valid" else _DCP_STACK_KEYS)
+                bands = _dcp_power_band_category_series(
+                    rows,
+                    ref_year,
+                    mode="valid" if chart_type == "power_band_valid" else "total",
+                    ranges=shared_ranges,
+                )
+            else:
+                band_keys = []
+                bands = _dcp_power_band_series(
+                    rows,
+                    ref_year,
+                    distinct_revisions=(chart_type == "power_band_requests"),
+                    mode="total",
+                    ranges=shared_ranges if chart_type == "power_band" else None,
+                )
+            data_rows = []
+            for band in bands:
+                row = {
+                    "Faixa": band.get("label"),
+                    "Limite inferior MW": band.get("lower"),
+                    "Limite superior MW": band.get("upper"),
+                    "Solicitacoes" if chart_type == "power_band_requests" else "Projetos": band.get("count"),
+                }
+                for key in band_keys:
+                    row[f"{labels_export[key]} Projetos"] = band.get(key, 0)
+                data_rows.append(row)
+            return metadata_rows, data_rows, []
+
+        data_rows = []
+        long_rows = []
+        for item in chart_series:
+            row = {"Ano": item.get("year")}
+            total_mw = 0.0
+            total_projects = 0
+            for key in keys:
+                label = labels_export[key]
+                mw = _dcp_num(item.get(key))
+                projects = int(round(_dcp_num(item.get(f"{key}_projetos"))))
+                row[f"{label} MW"] = mw
+                row[f"{label} Projetos"] = projects
+                total_mw += mw
+                total_projects += projects
+                long_rows.append({
+                    "Ano": item.get("year"),
+                    "Categoria": label,
+                    "MW": mw,
+                    "Projetos": projects,
+                })
+            row["Total MW"] = total_mw
+            row["Total Projetos"] = total_projects
+            data_rows.append(row)
+        return metadata_rows, data_rows, long_rows
+
+    @render.download(
+        filename=lambda: f"painel_datacenters_grafico_{dc_panel_chart_type.get() or 'grafico'}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    )
+    def download_dcp_chart():
+        metadata_rows, data_rows, long_rows = _dcp_chart_export_payload()
+        tmp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
+                tmp_path = tmp.name
+            _write_dcp_chart_excel(tmp_path, metadata_rows, data_rows, long_rows)
+            with open(tmp_path, "rb") as f:
+                yield f.read()
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
+                os.remove(tmp_path)
 
     @output
     @render.ui
@@ -2902,30 +4345,65 @@ def server(input: Inputs, output: Outputs, session: Session):
 
         ref_year = _dcp_reference_year()
         period_years = _dcp_period_years()
-        raw_period_years = _dcp_raw_period_years()
         rows = _dcp_base_rows(include_state=True)
         all_rows = _dcp_base_rows(include_state=False)
         summary = _dcp_state_summary(rows, ref_year)
         total = summary["total"]
-        selected_uf = dc_panel_state.get()
+        selected_uf = _dcp_selected_states()
         metric = dc_panel_metric.get()
         chart_type = dc_panel_chart_type.get()
+        if chart_type == "received":
+            chart_scope_label = "Novos projetos"
+        elif chart_type in ("power_band", "power_band_total"):
+            chart_scope_label = "Faixa de projetos - Montante total"
+        elif chart_type == "power_band_valid":
+            chart_scope_label = "Faixa de projetos - Montante válido"
+        elif chart_type == "power_band_requests":
+            chart_scope_label = "Solicitações"
+        elif chart_type == "possible":
+            chart_scope_label = "Montante válido"
+        elif chart_type == "summary":
+            chart_scope_label = "Resumo"
+        else:
+            chart_scope_label = "Solicitações"
         state_totals = _dcp_state_totals(ref_year)
-        series = _dcp_year_series(rows, period_years)
+        spa_rows = [r for r in rows if _dcp_is_panel_spa_row(r)]
+        series = _dcp_year_series(spa_rows, period_years)
+        requests_series = _dcp_year_series(rows, period_years)
         possible_series = _dcp_possible_year_series(rows, period_years)
-        raw_series = _dcp_raw_year_series(rows, raw_period_years)
-        power_band_series = _dcp_power_band_series(rows, ref_year, distinct_revisions=(chart_type == "power_band_requests"))
+        summary_series = _dcp_summary_year_series(rows, period_years)
+        shared_power_band_ranges = _dcp_shared_project_power_band_ranges(rows, ref_year)
+        if chart_type in ("power_band_total", "power_band_valid"):
+            power_band_series = _dcp_power_band_category_series(
+                rows,
+                ref_year,
+                mode="valid" if chart_type == "power_band_valid" else "total",
+                ranges=shared_power_band_ranges,
+            )
+        else:
+            power_band_series = _dcp_power_band_series(
+                rows,
+                ref_year,
+                distinct_revisions=(chart_type == "power_band_requests"),
+                mode="total",
+                ranges=shared_power_band_ranges if chart_type == "power_band" else None,
+            )
         if chart_type == "possible":
             chart_series = possible_series
             chart_years = period_years
             chart_include_inviavel = False
             chart_include_line = False
-        elif chart_type == "raw":
-            chart_series = raw_series
-            chart_years = raw_period_years
+        elif chart_type == "summary":
+            chart_series = summary_series
+            chart_years = period_years
             chart_include_inviavel = True
             chart_include_line = False
-        elif chart_type in ("power_band", "power_band_requests"):
+        elif chart_type == "received_requests":
+            chart_series = requests_series
+            chart_years = period_years
+            chart_include_inviavel = True
+            chart_include_line = False
+        elif chart_type in ("power_band", "power_band_total", "power_band_valid", "power_band_requests"):
             chart_series = series
             chart_years = [ref_year] if ref_year else []
             chart_include_inviavel = True
@@ -2935,15 +4413,16 @@ def server(input: Inputs, output: Outputs, session: Session):
             chart_years = period_years
             chart_include_inviavel = True
             chart_include_line = False
-        map_rows = [r for r in all_rows if str(r.get("uf") or "").upper() == selected_uf] if selected_uf else all_rows
+        selected_set = set(_dcp_state_values(selected_uf))
+        map_rows = [r for r in all_rows if str(r.get("uf") or "").upper() in selected_set] if selected_set else all_rows
         map_summary = _dcp_state_summary(map_rows, ref_year)
-        map_title = f"{UF_MAP[selected_uf]} ({selected_uf})" if selected_uf else "Todos os estados"
+        map_title = _dcp_state_title(selected_uf)
 
         return tags.div(
             tags.div(
-                tags.div("Painel DataCenters", class_="page-title"),
+                tags.div("Painel de Data Centers na Rede Básica", class_="page-title"),
                 tags.div(
-                    f"Rede RB | SPA | Ano de referência: {ref_year or '—'} | Período: {chart_years[0] if chart_years else '—'}–{chart_years[-1] if chart_years else '—'}",
+                    f"Rede RB | {chart_scope_label} | Ano de referência: {ref_year or '—'} | Período: {chart_years[0] if chart_years else '—'}–{chart_years[-1] if chart_years else '—'}",
                     class_="page-subtitle",
                 ),
                 class_="dcp-title-row",
@@ -2954,16 +4433,23 @@ def server(input: Inputs, output: Outputs, session: Session):
                     f"{_dcp_fmt(summary['solicitacoes'])}/{_dcp_fmt(summary['projetos'])}",
                     "Total no ano de referência",
                     "neutral",
-                    "▦",
-                    "Solicitações considera as SGA-RPAs; o número de projetos considera apenas as SGA-SPAs.",
+                    _dcp_kpi_icon("datacenter"),
+                    "Projetos consideram apenas solicitações de novos Data Centers. Solicitações incluem esses novos projetos e as revisões de montante solicitadas posteriormente para alguns deles.",
                 ),
-                _dcp_card("MW solicitados", _dcp_fmt_mw(total), "Total no ano de referência", "cyan", "⚡"),
-                _dcp_card("Aprovados", _dcp_fmt_mw(summary["aprovado"]), f"{_dcp_pct(summary['aprovado'], total)} do total", "green", "✓"),
-                _dcp_card("Em análise", _dcp_fmt_mw(summary["analise"]), f"{_dcp_pct(summary['analise'], total)} do total", "blue", "◷"),
-                _dcp_card("Inviáveis", _dcp_fmt_mw(summary["inviavel"]), f"{_dcp_pct(summary['inviavel'], total)} do total", "red", "×"),
-                _dcp_card("CUST assinados", _dcp_fmt_mw(summary["cust"]), f"{_dcp_pct(summary['cust'], total)} do total", "purple", "◇"),
+                _dcp_card("Solicitados [MW]", _dcp_fmt_mw(total), "Total no ano de referência", "cyan", "⚡"),
+                _dcp_card("Em análise [MW]", _dcp_fmt_mw(summary["analise"]), f"{_dcp_pct(summary['analise'], total)} do total", "blue", _dcp_kpi_icon("search")),
+                _dcp_card("CUST assinados [MW]", _dcp_fmt_mw(summary["cust"]), f"{_dcp_pct(summary['cust'], total)} do total", "purple", _dcp_kpi_icon("contract")),
+                _dcp_card("Aprovados aptos a CUST [MW]", _dcp_fmt_mw(summary["aprovado"]), f"{_dcp_pct(summary['aprovado'], total)} do total", "green", "✓"),
+                _dcp_card(
+                    "Aprovados não contratados [MW]",
+                    _dcp_fmt_mw(summary["anulado"]),
+                    f"{_dcp_pct(summary['anulado'], total)} do total",
+                    "amber",
+                    _dcp_kpi_icon("contract_x"),
+                ),
+                _dcp_card("Inviáveis [MW]", _dcp_fmt_mw(summary["inviavel"]), f"{_dcp_pct(summary['inviavel'], total)} do total", "red", "×"),
                 class_="cards-row dcp-kpi-row",
-                style="grid-template-columns: repeat(6, 1fr);",
+                style="grid-template-columns: repeat(7, minmax(0, 1fr));",
             ),
             tags.div(
                 tags.div(
@@ -2976,7 +4462,7 @@ def server(input: Inputs, output: Outputs, session: Session):
                         tags.div(
                             tags.div(tags.span("Solic./Proj."), tags.strong(f"{_dcp_fmt(map_summary['solicitacoes'])}/{_dcp_fmt(map_summary['projetos'])}")),
                             tags.div(tags.span("MW solic."), tags.strong(_dcp_fmt_mw(map_summary["total"]))),
-                            tags.div(tags.span("Aprovados"), tags.strong(_dcp_fmt_mw(map_summary["aprovado"]))),
+                            tags.div(tags.span("Aprovados"), tags.strong(_dcp_fmt_mw(map_summary["total_aprovado"]))),
                             class_="dcp-selected-stats",
                         ),
                         tags.button("Limpar seleção", class_="dcp-map-clear") if selected_uf else None,
@@ -2985,9 +4471,13 @@ def server(input: Inputs, output: Outputs, session: Session):
                     class_="dcp-panel dcp-map-panel",
                 ),
                 _dcp_power_band_chart(power_band_series, selected_uf, chart_type=chart_type)
-                if chart_type in ("power_band", "power_band_requests")
+                if chart_type in ("power_band", "power_band_total", "power_band_valid", "power_band_requests")
                 else _dcp_chart(chart_series, selected_uf, chart_type=chart_type, metric=metric, include_inviavel=chart_include_inviavel, include_line=chart_include_line),
-                _dcp_ranking(state_totals, ref_year),
+                tags.div(
+                    _dcp_ranking(state_totals, ref_year),
+                    _dcp_region_ranking(state_totals, ref_year),
+                    class_="dcp-ranking-column",
+                ),
                 class_="dcp-main-grid",
             ),
             class_="dcp-page",
@@ -3001,6 +4491,13 @@ def server(input: Inputs, output: Outputs, session: Session):
 
         f_status = dc_status_filter.get()
         f_status_local = dc_status_filter.get()
+        kpi_rows = _dc_filtered_rows(apply_status_chip=False)
+        kpi_total = len(kpi_rows)
+        kpi_emitidos = sum(1 for r in kpi_rows if _classify_status_card(r.get("status")) == "emitido")
+        kpi_andamento = sum(1 for r in kpi_rows if _classify_status_card(r.get("status")) == "andamento")
+        kpi_interrompidos = sum(1 for r in kpi_rows if _classify_status_card(r.get("status")) == "interrompido")
+        kpi_cancelados = sum(1 for r in kpi_rows if _classify_status_card(r.get("status")) == "cancelado")
+        kpi_anulados = sum(1 for r in kpi_rows if _classify_status_card(r.get("status")) == "anulado")
         showing = len(_dc_filtered_rows())
 
         return tags.div(
@@ -3013,37 +4510,37 @@ def server(input: Inputs, output: Outputs, session: Session):
             tags.div(
                 tags.div(
                     tags.div("🗂️", class_="stat-icon"),
-                    tags.div(str(_dc_total), class_="stat-value"),
+                    tags.div(str(kpi_total), class_="stat-value"),
                     tags.div("Nº Solicitações", class_="stat-label"),
                     class_="stat-card green",
                 ),
                 tags.div(
                     tags.div("✓", class_="stat-icon"),
-                    tags.div(str(_dc_emitidos), class_="stat-value"),
+                    tags.div(str(kpi_emitidos), class_="stat-value"),
                     tags.div("Emitidos", class_="stat-label"),
                     class_="stat-card green",
                 ),
                 tags.div(
                     tags.div("⚙", class_="stat-icon"),
-                    tags.div(str(_dc_andamento), class_="stat-value"),
+                    tags.div(str(kpi_andamento), class_="stat-value"),
                     tags.div("Em andamento", class_="stat-label"),
                     class_="stat-card amber",
                 ),
                 tags.div(
                     tags.div("⏸", class_="stat-icon"),
-                    tags.div(str(_dc_interrompidos), class_="stat-value"),
+                    tags.div(str(kpi_interrompidos), class_="stat-value"),
                     tags.div("Interrompidos", class_="stat-label"),
                     class_="stat-card amber",
                 ),
                 tags.div(
                     tags.div("✕", class_="stat-icon"),
-                    tags.div(str(_dc_cancelados), class_="stat-value"),
+                    tags.div(str(kpi_cancelados), class_="stat-value"),
                     tags.div("Cancelados", class_="stat-label"),
                     class_="stat-card purple",
                 ),
                 tags.div(
                     tags.div("⊘", class_="stat-icon"),
-                    tags.div(str(_dc_anulados), class_="stat-value"),
+                    tags.div(str(kpi_anulados), class_="stat-value"),
                     tags.div("Anulados", class_="stat-label"),
                     class_="stat-card purple",
                 ),
@@ -3052,12 +4549,12 @@ def server(input: Inputs, output: Outputs, session: Session):
             ),
             # Toolbar: chips de status + botão matriz
             tags.div(
-                ui.input_action_button("dc_filter_all", f"Todos ({_dc_total})", class_="dc-chip" + (" active" if f_status_local == "todos" else "")),
-                ui.input_action_button("dc_filter_emitidos", f"Emitidos ({_dc_emitidos})", class_="dc-chip" + (" active" if f_status_local == "emitidos" else "")),
-                ui.input_action_button("dc_filter_andamento", f"Em andamento ({_dc_andamento})", class_="dc-chip" + (" active" if f_status_local == "andamento" else "")),
-                ui.input_action_button("dc_filter_interrompidos", f"Interrompidos ({_dc_interrompidos})", class_="dc-chip" + (" active" if f_status_local == "interrompidos" else "")),
-                ui.input_action_button("dc_filter_cancelados", f"Cancelados ({_dc_cancelados})", class_="dc-chip" + (" active" if f_status_local == "cancelados" else "")),
-                ui.input_action_button("dc_filter_anulados", f"Anulados ({_dc_anulados})", class_="dc-chip" + (" active" if f_status_local == "anulados" else "")),
+                ui.input_action_button("dc_filter_all", f"Todos ({kpi_total})", class_="dc-chip" + (" active" if f_status_local == "todos" else "")),
+                ui.input_action_button("dc_filter_emitidos", f"Emitidos ({kpi_emitidos})", class_="dc-chip" + (" active" if f_status_local == "emitidos" else "")),
+                ui.input_action_button("dc_filter_andamento", f"Em andamento ({kpi_andamento})", class_="dc-chip" + (" active" if f_status_local == "andamento" else "")),
+                ui.input_action_button("dc_filter_interrompidos", f"Interrompidos ({kpi_interrompidos})", class_="dc-chip" + (" active" if f_status_local == "interrompidos" else "")),
+                ui.input_action_button("dc_filter_cancelados", f"Cancelados ({kpi_cancelados})", class_="dc-chip" + (" active" if f_status_local == "cancelados" else "")),
+                ui.input_action_button("dc_filter_anulados", f"Anulados ({kpi_anulados})", class_="dc-chip" + (" active" if f_status_local == "anulados" else "")),
                 ui.input_action_button("btn_dc_matrix", "📊 Solicitações com todos os valores solicitados", class_="dc-btn-primary"),
                 ui.download_button("download_dc_list", "⬇ Excel", class_="back-btn", style="margin:0;"),
                 class_="dc-toolbar",
@@ -3083,6 +4580,7 @@ def server(input: Inputs, output: Outputs, session: Session):
             tags.thead(
                 tags.tr(
                     tags.th("Empreendimento / Ponto"),
+                    tags.th("UF", style="text-align:center;"),
                     tags.th("Protocolo", style="text-align:center;"),
                     tags.th("Data Solic.", style="text-align:center; font-size:10px;",
                             title="Data da Solicitação de Acesso (fila)"),
@@ -3105,6 +4603,8 @@ def server(input: Inputs, output: Outputs, session: Session):
                             title="Data limite para assinatura do CUST (90 dias após emissão)"),
                     tags.th("CUST", style="text-align:center; font-size:10px;",
                             title="Código do contrato CUST se assinado"),
+                    tags.th("Assinatura CUST", style="text-align:center; font-size:10px;",
+                            title="Data de assinatura em bdt.tb_contrato.dat_assinatura"),
                     tags.th("Viabilidade", style="text-align:center;",
                             title="Status de viabilidade do BD entrada"),
                 ),
@@ -3117,7 +4617,8 @@ def server(input: Inputs, output: Outputs, session: Session):
     @render.ui
     def dc_count_badge():
         n = len(_dc_filtered_rows())
-        return tags.span(f"{n} de {_dc_total}", class_="panel-badge")
+        total_filtrado = len(_dc_filtered_rows(apply_status_chip=False))
+        return tags.span(f"{n} de {total_filtrado}", class_="panel-badge")
 
     # --- DATA CENTERS DETAIL PAGE ---
     @output
@@ -3399,19 +4900,23 @@ def server(input: Inputs, output: Outputs, session: Session):
         except Exception:
             f_conexao = ""
         try:
-            f_rede = list(input.dcm_rede() or [])
+            f_uf = _as_filter_list(input.dcm_uf(), default=(["SP"] if "SP" in _dc_ufs else []))
+        except Exception:
+            f_uf = ["SP"] if "SP" in _dc_ufs else []
+        try:
+            f_rede = _as_filter_list(input.dcm_rede())
         except Exception:
             f_rede = []
         try:
-            f_kv = list(input.dcm_kv() or [])
+            f_kv = _as_filter_list(input.dcm_kv())
         except Exception:
             f_kv = []
         try:
-            f_viab = list(input.dcm_viab() or [])
+            f_viab = _as_filter_list(input.dcm_viab())
         except Exception:
             f_viab = []
         try:
-            f_status_select = list(input.dcm_status() or [])
+            f_status_select = _as_filter_list(input.dcm_status())
         except Exception:
             f_status_select = []
         try:
@@ -3442,6 +4947,8 @@ def server(input: Inputs, output: Outputs, session: Session):
             if f_proto and f_proto not in str(r.get("main_protocol", "")).lower():
                 continue
             if f_conexao and f_conexao not in str(r.get("conexao", "")).lower():
+                continue
+            if f_uf and str(r.get("uf") or "").upper() not in f_uf:
                 continue
             if f_rede and r.get("rede") not in f_rede:
                 continue
@@ -3549,42 +5056,23 @@ def server(input: Inputs, output: Outputs, session: Session):
             "ptdis": "cust-pill cust-ptdis",
             "inviavel": "cust-pill cust-inviavel",
             "verificar": "cust-pill cust-verificar",
+            "anulado": "cust-pill cust-anulado",
         }.get(cust_status_v, "cust-pill")
 
         # Pill viabilidade
         viab = r.get("viabilidade_resumo") or "Pendente"
         viab_pill_class = _viab_pill_class(viab)
 
-        # Empreendimento + ponto
-        ponto_label = r.get("ponto_label") or ""
-        empr_main = (r.get("empreendimento") or "").strip()
-        proto_text = r.get("main_protocol") or ""
-        is_sam = "SAM" in proto_text.upper()
-        # Para SAM: usar APENAS o ponto de contratação (ignora empreendimento)
-        if is_sam:
-            display_text = ponto_label or r.get("ponto_instalacao") or empr_main or "—"
-            empr_cell = tags.div(display_text, class_="dc-empr-name", title=display_text)
-            cell_title = display_text
-        elif empr_main and ponto_label and ponto_label != empr_main:
-            empr_cell = tags.div(
-                tags.div(empr_main, class_="dc-empr-name"),
-                tags.div(ponto_label, class_="dc-ponto-label"),
-            )
-            cell_title = empr_main
-        elif empr_main:
-            empr_cell = tags.div(empr_main, class_="dc-empr-name", title=empr_main)
-            cell_title = empr_main
-        elif ponto_label:
-            empr_cell = tags.div(ponto_label, class_="dc-empr-name", title=ponto_label)
-            cell_title = ponto_label
-        else:
-            empr_cell = tags.div("—", class_="dc-empr-name")
-            cell_title = ""
+        empr_cell, cell_title = _dc_empreendimento_cell(r)
 
         return tags.tr(
             tags.td(empr_cell, title=cell_title),
+            tags.td(r.get("uf") or "—",
+                    style="text-align:center; font-weight:700; color:var(--text-mid);"),
             tags.td(r["main_protocol"] or "—",
                     style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--green-dark); font-weight:600; text-align:center;"),
+            tags.td(_data_entrada_acesso_for_dc_row(r),
+                    class_="date-cell matrix-access-entry-col", style="text-align:center;"),
             tags.td("⋯", class_="matrix-toggle-spacer", title="Colunas agrupadas"),
             tags.td(r.get("data_solicitacao") or "—",
                     class_="date-cell matrix-collapsible-col", style="text-align:center;"),
@@ -3606,6 +5094,8 @@ def server(input: Inputs, output: Outputs, session: Session):
             tags.td(r.get("prazo_cust") or "—",
                     class_="date-cell matrix-collapsible-col", style="text-align:center;"),
             tags.td(tags.span(cust_label, class_=cust_pill_class), class_="matrix-collapsible-col", style="text-align:center;"),
+            tags.td(r.get("data_assinatura_cust") or "—",
+                    class_="date-cell matrix-collapsible-col", style="text-align:center;"),
             tags.td(tags.span(viab, class_=viab_pill_class), class_="matrix-collapsible-col", style="text-align:center;"),
             *year_cells,
         )
@@ -3670,7 +5160,9 @@ def server(input: Inputs, output: Outputs, session: Session):
             tags.thead(
                 tags.tr(
                     tags.th("Empreendimento / Ponto", rowspan="2"),
+                    tags.th("UF", style="text-align:center;", rowspan="2"),
                     tags.th("Protocolo", style="text-align:center;", rowspan="2"),
+                    tags.th("Data de Entrada Acesso", class_="matrix-access-entry-col", style="text-align:center;", rowspan="2"),
                     tags.th(
                         tags.button("▸ Dados", type="button", class_="matrix-toggle-btn js-matrix-toggle", title="Expandir/retrair colunas entre Protocolo e os anos"),
                         class_="matrix-toggle-th",
@@ -3691,6 +5183,7 @@ def server(input: Inputs, output: Outputs, session: Session):
                     tags.th("Emissão Doc.", class_="matrix-collapsible-col", style="text-align:center; font-size:10px;", rowspan="2"),
                     tags.th("Prazo CUST", class_="matrix-collapsible-col", style="text-align:center; font-size:10px;", rowspan="2"),
                     tags.th("CUST", class_="matrix-collapsible-col", style="text-align:center; font-size:10px;", rowspan="2"),
+                    tags.th("Assinatura CUST", class_="matrix-collapsible-col", style="text-align:center; font-size:10px;", rowspan="2"),
                     tags.th("Viabilidade", class_="matrix-collapsible-col", style="text-align:center;", rowspan="2"),
                     *year_group_ths,
                 ),
@@ -3704,7 +5197,7 @@ def server(input: Inputs, output: Outputs, session: Session):
     @render.ui
     def dcm_count_badge():
         n = len(_dc_matrix_filtered())
-        return tags.span(f"{n} de {_dc_total} solicitações", class_="panel-badge")
+        return tags.span(f"{n} solicitações", class_="panel-badge")
 
     def _same_proto(a, b):
         return str(a or "").strip().upper() == str(b or "").strip().upper()
@@ -3902,17 +5395,20 @@ def server(input: Inputs, output: Outputs, session: Session):
 
         pi = point_idx.get()
         n_pontos = len(p["pontos"])
+        detail_cust_info = _cust_info_for_proto(p.get("protocolo"))
+        detail_cod_contrato = str((detail_cust_info or {}).get("cod_contrato") or "").strip()
+        detail_data_assinatura_cust = _cust_signature_label(detail_cust_info) if detail_cod_contrato else "—"
 
         # Info cards
         info_cards = tags.div(
             tags.div(
                 tags.div("CUST", class_="info-label"),
-                tags.div(p["cust"], class_="info-value"),
+                tags.div(detail_cod_contrato or "—", class_="info-value"),
                 class_="info-card",
             ),
             tags.div(
                 tags.div("Data Assinatura", class_="info-label"),
-                tags.div(p["data_assinatura"], class_="info-value"),
+                tags.div(detail_data_assinatura_cust, class_="info-value"),
                 class_="info-card",
             ),
             tags.div(

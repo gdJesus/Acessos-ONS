@@ -2,7 +2,7 @@
 
 import pandas as pd
 
-from .constants import UF_MAP
+from .constants import UF_MAP, VIABILIDADE_SGA_MAP
 
 def extrair_uf(codigo_ons):
     """Extrai a UF (2 letras) do código ONS. Ex: SPDES-138 → SP, RJSTNV138 → RJ."""
@@ -36,6 +36,23 @@ def normalize_uf(val, default="—"):
 
     compact = "".join(s.split())
     return compact if compact in UF_MAP else default
+
+
+def viabilidade_sga_label(val, default="—"):
+    """Traduz sgacesso.tb_solicitacao.id_viabilidade para o rótulo usado no painel."""
+    if val is None:
+        return default
+    try:
+        if pd.isna(val):
+            return default
+    except Exception:
+        pass
+
+    try:
+        return VIABILIDADE_SGA_MAP.get(int(float(str(val).replace(",", "."))), str(val).strip() or default)
+    except Exception:
+        text = str(val).strip()
+        return text if text and text not in ("nan", "None", "NULL") else default
 
 
 def parse_br_number(val):
